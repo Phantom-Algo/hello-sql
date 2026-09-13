@@ -221,8 +221,8 @@ class Catalog:
 
     @trace_storage_operation("catalog", "flush")
     def flush(self) -> None:
-        """把两张系统表的脏页写回磁盘。"""
-        for path in system_table_paths(self.db_dir):
+        """把三张系统表的脏页写回磁盘（V3 D30 起含索引系统表）。"""
+        for path in system_table_paths(self.db_dir).all():
             self._pool.flush(path)
 
     # ---- 内部：系统行写入与回滚 ----

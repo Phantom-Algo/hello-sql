@@ -94,3 +94,48 @@ JSON_TABLES_KEY = "tables"
 JSON_COLUMNS_KEY = "columns"
 JSON_NAME_KEY = "name"
 JSON_TYPE_KEY = "type"
+
+# ---- V3 索引：系统表与文件命名（D27/D28/D30）----
+# 第三张内部系统表；它本身是普通表文件（magic HSQL），不是索引文件。
+SYS_INDEXES_FILE_NAME = "sys_indexes.db"
+# 每个索引一个独立文件，统一放在每库的 indexes/ 子目录下（D27）。
+INDEX_DIR_NAME = "indexes"
+INDEX_FILE_SUFFIX = ".idx"
+
+# ---- V3 索引文件页 0（D28）----
+# 与表文件页 0 同为 20 B，且 free_head 的偏移/宽度完全一致，
+# 因此 pager 的空闲页链表可以原样复用（D29，见 test_index_constants_m1）。
+INDEX_MAGIC = b"HSIX"          # 4 B，区分索引文件与表文件
+INDEX_FILE_VERSION = 1         # 2 B
+INDEX_PAGE0_MAGIC_OFFSET = 0
+INDEX_PAGE0_MAGIC_SIZE = 4
+INDEX_PAGE0_VERSION_OFFSET = 4
+INDEX_PAGE0_VERSION_SIZE = 2
+INDEX_PAGE0_RESERVED_OFFSET = 6
+INDEX_PAGE0_RESERVED_SIZE = 2
+INDEX_PAGE0_ROOT_OFFSET = 8    # u32 根页号，空树指向一个空叶页
+INDEX_PAGE0_ROOT_SIZE = 4
+INDEX_PAGE0_HEIGHT_OFFSET = 12  # u32 树高，空树 = 1
+INDEX_PAGE0_HEIGHT_SIZE = 4
+INDEX_PAGE0_FREE_HEAD_OFFSET = 16
+INDEX_PAGE0_FREE_HEAD_SIZE = 4
+INDEX_PAGE0_HEADER_SIZE = 20
+
+# ---- V3 索引节点页（D32）----
+# 与数据页同样采用 slotted 写法：条目区自页头向后、槽目录自页尾向前。
+INDEX_NODE_HEADER_SIZE = 16
+INDEX_NODE_TYPE_OFFSET = 0     # u8：LEAF_NODE / INTERIOR_NODE
+INDEX_NODE_TYPE_SIZE = 1
+INDEX_NODE_COUNT_OFFSET = 1    # u16 条目数
+INDEX_NODE_COUNT_SIZE = 2
+INDEX_NODE_FREE_PTR_OFFSET = 4  # u32 条目区当前末尾
+INDEX_NODE_FREE_PTR_SIZE = 4
+INDEX_NODE_NEXT_LEAF_OFFSET = 8  # u32 仅叶页使用，0 = 链尾
+INDEX_NODE_NEXT_LEAF_SIZE = 4
+INDEX_NODE_FIRST_CHILD_OFFSET = 12  # u32 仅内节点使用
+INDEX_NODE_FIRST_CHILD_SIZE = 4
+LEAF_NODE = 1
+INTERIOR_NODE = 2
+INDEX_SLOT_SIZE = 8            # u32 偏移 + u32 长度
+INDEX_RID_SIZE = 8             # u64 rid
+INDEX_CHILD_PTR_SIZE = 4       # u32 子页号

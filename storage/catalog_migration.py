@@ -45,7 +45,8 @@ _IDENTIFIER_RE = re.compile(r"[a-z_][a-z0-9_]*\Z")
 def load_or_migrate(db_dir: str | Path, pool: BufferPool) -> Catalog:
     """加载页式目录；必要时执行 V1 JSON 一次性迁移。"""
     root = Path(db_dir)
-    tables_path, columns_path = system_table_paths(root)
+    sys_paths = system_table_paths(root)
+    tables_path, columns_path = sys_paths.tables, sys_paths.columns
     json_path = root / CATALOG_FILE_NAME
     system_complete = tables_path.is_file() and columns_path.is_file()
 
@@ -101,8 +102,8 @@ def _rename_legacy_json(json_path: Path, root: Path) -> None:
 
 
 def _drop_system_files(root: Path, pool: BufferPool) -> None:
-    """清理两张系统表文件与其缓存帧（用于失败回滚/中断重试）。"""
-    for path in system_table_paths(root):
+    """清理三张系统表文件与其缓存帧（用于失败回滚/中断重试）。"""
+    for path in system_table_paths(root).all():
         pool.discard(path)
         try:
             path.unlink()

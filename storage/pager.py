@@ -1,13 +1,19 @@
-"""页级原语（PRD §6；D04/D05/D06）。
+"""页级原语（PRD §6；D04/D05/D06；V3 起兼作通用"页文件层"）。
 
 职责：把“表文件 = 一维页数组”落地——页 0 文件头、页分配/释放、
 按页读写；具体行 / 槽布局属于 engine，本层不解释记录。
 
+V3（D27/D28/D29）：索引文件也是"页的一维数组"，且页 0 的 free_head 与
+表文件同偏移同宽度，因此本层通过 PageFileKind 参数化"页 0 身份校验"，
+同一套 alloc / free / free_pages / read / write 同时服务两类文件。
+默认 kind 是表文件，既有调用点与行为完全不变。
+
 不变量：
-- 表文件长度恒为 PAGE_SIZE 的整数倍，否则视为损坏（E_STORAGE）；
+- 页文件长度恒为 PAGE_SIZE 的整数倍，否则视为损坏（E_STORAGE）；
 - 页 0 永不释放、不存用户行；字段布局见 constants（D04）；
 - 文件只增不减，不自动收缩（D06）；
-- magic / version / 文件长度校验失败 → E_STORAGE（契约 §4）。
+- magic / version / 文件长度校验失败 → E_STORAGE（契约 §4）；
+- 两类文件互不冒充：索引文件当表文件读、或反之，都是 E_STORAGE。
 
 目标不变量（随阶段生效，见“实现阶段”）：
 - M3 起：一切页读写经 BufferPool，本层不直接裸 I/O（§6.5）；
@@ -26,6 +32,7 @@ create_table_file 和纯校验辅助函数不独立生成事件，避免重复�
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 import struct
 from pathlib import Path
@@ -35,6 +42,8 @@ from storage.cache import BufferPool
 from storage.constants import (
     FIRST_ROW_ID,
     FREE_LIST_END,
+    INDEX_FILE_VERSION,
+    INDEX_MAGIC,
     PAGE0_FREE_HEAD_OFFSET,
     PAGE0_FREE_HEAD_SIZE,
     PAGE0_HEADER_SIZE,
@@ -47,6 +56,23 @@ from storage.trace_hooks import trace_storage_operation
 
 # 页 0 头部 20 B：magic(4s) + version(H) + reserved(H) + next_row_id(Q) + free_head(I)
 _PAGE0_STRUCT = struct.Struct("<4sHHQI")
+
+
+@dataclass(frozen=True)
+class PageFileKind:
+    """页 0 的身份（magic / version）与错误信息里的称呼。
+
+    两种页文件的 free_head 位于同一偏移与宽度，所以只有身份校验需要参数化；
+    页分配、空闲链表、读写都不区分文件种类。
+    """
+
+    magic: bytes
+    version: int
+    label: str
+
+
+TABLE_FILE_KIND = PageFileKind(TABLE_FILE_MAGIC, TABLE_FILE_VERSION, "table file")
+INDEX_FILE_KIND = PageFileKind(INDEX_MAGIC, INDEX_FILE_VERSION, "index file")
 
 
 def create_table_file(file_path: Path) -> None:
@@ -74,38 +100,51 @@ def create_table_file(file_path: Path) -> None:
         raise SqlError(E_STORAGE, f"short write creating table file: {file_path}")
 
 
-def _table_page_count(file_path: Path) -> int:
+def _page_file_count(file_path: Path, kind: PageFileKind = TABLE_FILE_KIND) -> int:
     """文件长度 → 页数；缺失/半页/空文件都视为损坏（E_STORAGE）。"""
     try:
         size = file_path.stat().st_size
     except OSError as exc:
-        raise SqlError(E_STORAGE, f"cannot access table file: {file_path}") from exc
+        raise SqlError(
+            E_STORAGE, f"cannot access {kind.label}: {file_path}"
+        ) from exc
     if size < PAGE_SIZE or size % PAGE_SIZE != 0:
         raise SqlError(
             E_STORAGE,
-            f"corrupt table file {file_path}: size {size} is not page-aligned",
+            f"corrupt {kind.label} {file_path}: size {size} is not page-aligned",
         )
     return size // PAGE_SIZE
 
 
 @trace_storage_operation("pager", "page_count")
-def page_count(pool: BufferPool, file_path: Path) -> int:
+def page_count(
+    pool: BufferPool,
+    file_path: Path,
+    *,
+    kind: PageFileKind = TABLE_FILE_KIND,
+) -> int:
     """返回文件当前页数（engine scan/遍历用；缺失/半页 → E_STORAGE）。
 
     PRD §6.5 未列此原语，但 scan 需要知道文件有几页，M2 补充。
     pool 形参同其他原语：M3 起内部可改走缓存，调用方不变。
+    V3 起加 kind：索引文件用 INDEX_FILE_KIND 传入，默认仍是表文件。
     """
-    return _table_page_count(file_path)
+    return _page_file_count(file_path, kind)
 
 
 @trace_storage_operation("pager", "free_pages")
-def free_pages(pool: BufferPool, file_path: Path) -> list[int]:
+def free_pages(
+    pool: BufferPool,
+    file_path: Path,
+    *,
+    kind: PageFileKind = TABLE_FILE_KIND,
+) -> list[int]:
     """遍历空闲页链表，返回链序（最新释放在前）的页号列表（D05）。
 
     链成环 / next 越界 / 自环 → E_STORAGE；engine 扫描前用本函数避开空闲页。
     """
-    total_pages = _table_page_count(file_path)
-    page0 = read_page(pool, file_path, 0)
+    total_pages = _page_file_count(file_path, kind)
+    page0 = read_page(pool, file_path, 0, kind=kind)
     head = int.from_bytes(
         page0[PAGE0_FREE_HEAD_OFFSET : PAGE0_FREE_HEAD_OFFSET + PAGE0_FREE_HEAD_SIZE],
         "little",
@@ -125,22 +164,24 @@ def free_pages(pool: BufferPool, file_path: Path) -> list[int]:
     return result
 
 
-def _check_page0(file_path: Path) -> None:
+def _check_page0(file_path: Path, kind: PageFileKind = TABLE_FILE_KIND) -> None:
     """校验页 0 头部：magic / version 不符 → E_STORAGE（文件身份/格式错误）。"""
     try:
         with open(file_path, "rb") as fh:
             raw = fh.read(PAGE0_HEADER_SIZE)
     except OSError as exc:
-        raise SqlError(E_STORAGE, f"cannot read table file: {file_path}") from exc
+        raise SqlError(E_STORAGE, f"cannot read {kind.label}: {file_path}") from exc
     if len(raw) < PAGE0_HEADER_SIZE:
-        raise SqlError(E_STORAGE, f"corrupt table file {file_path}: short page 0")
-    magic, version, _reserved, _next_row_id, _free_head = _PAGE0_STRUCT.unpack(raw)
-    if magic != TABLE_FILE_MAGIC:
-        raise SqlError(E_STORAGE, f"not a hello-sql table file: {file_path}")
-    if version != TABLE_FILE_VERSION:
+        raise SqlError(E_STORAGE, f"corrupt {kind.label} {file_path}: short page 0")
+    # magic / version 在两类页 0 里的偏移一致，只比较前 6 字节。
+    magic = raw[:4]
+    version = int.from_bytes(raw[4:6], "little")
+    if magic != kind.magic:
+        raise SqlError(E_STORAGE, f"not a hello-sql {kind.label}: {file_path}")
+    if version != kind.version:
         raise SqlError(
             E_STORAGE,
-            f"unsupported table file version {version}: {file_path}",
+            f"unsupported {kind.label} version {version}: {file_path}",
         )
 
 
@@ -154,14 +195,19 @@ def _check_page_no(file_path: Path, page_no: int, page_count: int) -> None:
 
 
 @trace_storage_operation("pager", "alloc_page")
-def alloc_page(pool: BufferPool, file_path: Path) -> int:
+def alloc_page(
+    pool: BufferPool,
+    file_path: Path,
+    *,
+    kind: PageFileKind = TABLE_FILE_KIND,
+) -> int:
     """分配一个数据页号：优先弹空闲页链表，空链表才在文件末尾追加（D05/D06）。
 
     追加前校验页 0 身份，防止在冒牌/损坏文件上继续扩展（E_STORAGE）。
     """
-    total_pages = _table_page_count(file_path)
-    _check_page0(file_path)
-    page0 = read_page(pool, file_path, 0)
+    total_pages = _page_file_count(file_path, kind)
+    _check_page0(file_path, kind)
+    page0 = read_page(pool, file_path, 0, kind=kind)
     free_head = int.from_bytes(
         page0[PAGE0_FREE_HEAD_OFFSET : PAGE0_FREE_HEAD_OFFSET + PAGE0_FREE_HEAD_SIZE],
         "little",
@@ -172,7 +218,7 @@ def alloc_page(pool: BufferPool, file_path: Path) -> int:
                 E_STORAGE,
                 f"corrupt free list in {file_path}: head {free_head} out of range",
             )
-        head_page = read_page(pool, file_path, free_head)
+        head_page = read_page(pool, file_path, free_head, kind=kind)
         next_head = int.from_bytes(head_page[:4], "little")
         if next_head == free_head or (
             next_head != FREE_LIST_END and not 0 < next_head < total_pages
@@ -185,7 +231,7 @@ def alloc_page(pool: BufferPool, file_path: Path) -> int:
         updated_page0[
             PAGE0_FREE_HEAD_OFFSET : PAGE0_FREE_HEAD_OFFSET + PAGE0_FREE_HEAD_SIZE
         ] = next_head.to_bytes(PAGE0_FREE_HEAD_SIZE, "little")
-        write_page(pool, file_path, 0, updated_page0)
+        write_page(pool, file_path, 0, updated_page0, kind=kind)
         return free_head
     # free list 空 → 文件末尾追加一页（D06：只增不减）
     new_page_no = total_pages
@@ -194,51 +240,63 @@ def alloc_page(pool: BufferPool, file_path: Path) -> int:
             fh.seek(0, os.SEEK_END)
             written = fh.write(bytes(PAGE_SIZE))
     except OSError as exc:
-        raise SqlError(E_STORAGE, f"cannot extend table file: {file_path}") from exc
+        raise SqlError(E_STORAGE, f"cannot extend {kind.label}: {file_path}") from exc
     if written != PAGE_SIZE:
-        raise SqlError(E_STORAGE, f"short write extending table file: {file_path}")
+        raise SqlError(E_STORAGE, f"short write extending {kind.label}: {file_path}")
     return new_page_no
 
 
 @trace_storage_operation("pager", "free_page")
-def free_page(pool: BufferPool, file_path: Path, page_no: int) -> None:
+def free_page(
+    pool: BufferPool,
+    file_path: Path,
+    page_no: int,
+    *,
+    kind: PageFileKind = TABLE_FILE_KIND,
+) -> None:
     """把整页空的数据页还进空闲链表（D05）。
 
     该页前 4 B 写入旧 free_head 作 next，页 0 free_head 指向该页；
     文件长度不变（D06）。页 0 / 越界页号 → E_STORAGE。
     """
-    total_pages = _table_page_count(file_path)
+    total_pages = _page_file_count(file_path, kind)
     if type(page_no) is not int or not 0 < page_no < total_pages:
         raise SqlError(
             E_STORAGE,
             f"cannot free page {page_no!r} in {file_path} ({total_pages} pages)",
         )
-    page0 = read_page(pool, file_path, 0)
+    page0 = read_page(pool, file_path, 0, kind=kind)
     old_head = int.from_bytes(
         page0[PAGE0_FREE_HEAD_OFFSET : PAGE0_FREE_HEAD_OFFSET + PAGE0_FREE_HEAD_SIZE],
         "little",
     )
-    freed = bytearray(read_page(pool, file_path, page_no))
+    freed = bytearray(read_page(pool, file_path, page_no, kind=kind))
     freed[: PAGE0_FREE_HEAD_SIZE] = old_head.to_bytes(PAGE0_FREE_HEAD_SIZE, "little")
-    write_page(pool, file_path, page_no, freed)
+    write_page(pool, file_path, page_no, freed, kind=kind)
     updated_page0 = bytearray(page0)
     updated_page0[
         PAGE0_FREE_HEAD_OFFSET : PAGE0_FREE_HEAD_OFFSET + PAGE0_FREE_HEAD_SIZE
     ] = page_no.to_bytes(PAGE0_FREE_HEAD_SIZE, "little")
-    write_page(pool, file_path, 0, updated_page0)
+    write_page(pool, file_path, 0, updated_page0, kind=kind)
 
 
 @trace_storage_operation("pager", "read_page")
-def read_page(pool: BufferPool, file_path: Path, page_no: int) -> bytes:
+def read_page(
+    pool: BufferPool,
+    file_path: Path,
+    page_no: int,
+    *,
+    kind: PageFileKind = TABLE_FILE_KIND,
+) -> bytes:
     """读一整页返回 bytes 副本。
 
     M3 起经 BufferPool：缺页读盘、命中直接用（D09）；读页 0 时额外校验
     magic/version；页越界/半页/缺失一律 E_STORAGE。
     """
-    page_count = _table_page_count(file_path)
+    page_count = _page_file_count(file_path, kind)
     _check_page_no(file_path, page_no, page_count)
     if page_no == 0:
-        _check_page0(file_path)
+        _check_page0(file_path, kind)
     frame = pool.get_page(file_path, page_no)
     try:
         return bytes(frame)
@@ -248,7 +306,12 @@ def read_page(pool: BufferPool, file_path: Path, page_no: int) -> bytes:
 
 @trace_storage_operation("pager", "write_page")
 def write_page(
-    pool: BufferPool, file_path: Path, page_no: int, data: bytes
+    pool: BufferPool,
+    file_path: Path,
+    page_no: int,
+    data: bytes,
+    *,
+    kind: PageFileKind = TABLE_FILE_KIND,
 ) -> None:
     """把一整页内容写回文件偏移 page_no * PAGE_SIZE。
 
@@ -259,7 +322,7 @@ def write_page(
         raise SqlError(
             E_STORAGE, f"write_page requires exactly {PAGE_SIZE} bytes: {file_path}"
         )
-    page_count = _table_page_count(file_path)
+    page_count = _page_file_count(file_path, kind)
     _check_page_no(file_path, page_no, page_count)
     frame = pool.get_page(file_path, page_no)
     try:
