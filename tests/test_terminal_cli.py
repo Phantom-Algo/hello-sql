@@ -16,12 +16,14 @@ from rich.cells import cell_len
 from rich.console import Console
 
 from compiler import parse, parse_script
+from contracts.errors import E_BAD_ARG, SqlError
 from contracts.result import QueryResult
 from main import main, resolve_data_dir
 from runner import Runner
 from runner.terminal.render import TerminalRenderer, gradient_title, title_art
 from runner.terminal.session import SqlCompleter, TerminalSession
 from storage import DatabaseServer
+from UI import QueryInspector
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,6 +107,106 @@ def test_completion_tracks_current_database(tmp_path):
     runner.execute("USE shop")
     assert choices("SELECT * FROM lo") == []
     assert choices("/ta") == ["/tables"]
+
+
+def test_inspect_completion_offers_only_supported_module_filters(tmp_path):
+    """``/inspect`` 参数位应只提示 ALL/A/B/C 四个稳定筛选值。"""
+
+    runner = Runner(DatabaseServer(tmp_path), parse, parse_script=parse_script)
+    completer = SqlCompleter(runner)
+    choices = [
+        item.text
+        for item in completer.get_completions(
+            Document("/inspect "),
+            CompleteEvent(),
+        )
+    ]
+
+    assert choices == ["A", "ALL", "B", "C"]
+
+
+def test_plain_inspect_command_filters_latest_trace_without_reexecution(
+    tmp_path,
+    capsys,
+):
+    """纯文本 ``/inspect A`` 应只输出 A 阶段且不新增追踪。"""
+
+    inspector = QueryInspector()
+    server = DatabaseServer(tmp_path, trace_sink=inspector.storage_router)
+    runner = Runner(
+        server,
+        parse,
+        parse_script=parse_script,
+        trace_sink=inspector.execution_router,
+        inspector=inspector,
+    )
+    runner.execute("CREATE TABLE inspected (id INT);")
+    session = TerminalSession(runner, plain=True, history=False)
+    count_before = len(inspector.hub)
+
+    assert session._command("/inspect A") == (True, False)
+    output = capsys.readouterr().out
+    assert "module=A" in output
+    assert "A Lexer" in output
+    assert "B Catalog" not in output
+    assert "C Runtime" not in output
+    assert len(inspector.hub) == count_before
+
+
+def test_inspect_before_first_query_and_invalid_filter_are_friendly(tmp_path, capsys):
+    """无历史时给出提示，无效模块则使用 E_BAD_ARG 明确拒绝。"""
+
+    inspector = QueryInspector()
+    server = DatabaseServer(tmp_path, trace_sink=inspector.storage_router)
+    runner = Runner(
+        server,
+        parse,
+        parse_script=parse_script,
+        trace_sink=inspector.execution_router,
+        inspector=inspector,
+    )
+    session = TerminalSession(runner, plain=True, history=False)
+
+    assert session._command("/inspect") == (True, False)
+    assert "暂无可查看" in capsys.readouterr().out
+    with pytest.raises(SqlError) as caught:
+        session._command("/inspect D")
+    assert caught.value.code == E_BAD_ARG
+
+
+def test_interactive_inspect_opens_local_view_and_renders_tui_summary(tmp_path):
+    """交互 ``/inspect C`` 应打开本地窗口并同时保留 Rich 阶段摘要。"""
+
+    inspector = QueryInspector()
+    server = DatabaseServer(tmp_path, trace_sink=inspector.storage_router)
+    runner = Runner(
+        server,
+        parse,
+        parse_script=parse_script,
+        trace_sink=inspector.execution_router,
+        inspector=inspector,
+    )
+    runner.execute("CREATE TABLE browser_demo (id INT);")
+    session = TerminalSession(runner, history=False)
+    session.interactive = True
+    stream = io.StringIO()
+    session.renderer = TerminalRenderer(
+        Console(file=stream, width=120, color_system=None)
+    )
+
+    with patch.object(
+        inspector,
+        "open_view",
+        return_value=("http://127.0.0.1:43123/?module=C", True),
+    ) as opener:
+        assert session._command("/inspect C") == (True, False)
+
+    opener.assert_called_once_with("C")
+    output = stream.getvalue()
+    assert "QUERY INSPECTOR" in output
+    assert "Binder" in output and "Runtime" in output
+    assert "Lexer" not in output and "Catalog" not in output
+    assert "127.0.0.1:43123" in output
 
 
 @pytest.mark.parametrize("width", [24, 40, 80, 108, 120, 160])

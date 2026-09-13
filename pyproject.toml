@@ -25,5 +25,8 @@ hello-sql = "main:main"
 py-modules = ["main"]
 
 [tool.setuptools.packages.find]
-include = ["compiler*", "contracts*", "runner*", "storage*"]
+include = ["compiler*", "contracts*", "runner*", "storage*", "UI*"]
 exclude = ["*.tests", "*.tests.*"]
+
+[tool.setuptools.package-data]
+UI = ["assets/*.html", "assets/*.css", "assets/*.js"]

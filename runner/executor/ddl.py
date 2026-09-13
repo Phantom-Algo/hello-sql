@@ -21,6 +21,7 @@ from runner.logical_plan.plans import (
     LogicalDropTable,
     LogicalUseDatabase,
 )
+from runner.trace_hooks import trace_runner_operation
 
 
 def _ddl_success() -> QueryResult:
@@ -38,7 +39,10 @@ class CreateTableExecutor(StatementExecutor):
     table: str
     columns: tuple[ColumnDef, ...]
 
+    @trace_runner_operation("runtime", "create_table.execute")
     def execute(self, context: ExecutionContext) -> QueryResult:
+        """把已解析列定义交给当前 Storage 建表，成功时返回 DDL 空结果。"""
+
         context.storage.create_table(self.table, self.columns)
         return _ddl_success()
 
@@ -49,7 +53,10 @@ class DropTableExecutor(StatementExecutor):
 
     table: str
 
+    @trace_runner_operation("runtime", "drop_table.execute")
     def execute(self, context: ExecutionContext) -> QueryResult:
+        """从当前数据库删除表与其目录记录，存储错误原样传播。"""
+
         context.storage.drop_table(self.table)
         return _ddl_success()
 
@@ -63,7 +70,10 @@ class CreateDatabaseExecutor(StatementExecutor):
 
     name: str
 
+    @trace_runner_operation("runtime", "create_database.execute")
     def execute(self, context: ExecutionContext) -> QueryResult:
+        """请求 DatabaseServer 创建新库，存在性和路径错误交由 B 层判定。"""
+
         context.server.create_database(self.name)
         return _ddl_success()
 
@@ -74,7 +84,10 @@ class DropDatabaseExecutor(StatementExecutor):
 
     name: str
 
+    @trace_runner_operation("runtime", "drop_database.execute")
     def execute(self, context: ExecutionContext) -> QueryResult:
+        """先禁止删除当前库，通过后再请求 Server 删除目标数据库。"""
+
         if self.name == context.current_database:
             raise SqlError(
                 E_DATABASE_IN_USE,
@@ -91,7 +104,10 @@ class UseDatabaseExecutor(StatementExecutor):
 
     name: str
 
+    @trace_runner_operation("runtime", "use_database.execute")
     def execute(self, context: ExecutionContext) -> QueryResult:
+        """先建立新 Storage 连接，仅在成功后原子替换会话库名与存储视图。"""
+
         new_storage = context.server.connect(self.name)
         context.storage = new_storage
         context.current_database = self.name

@@ -24,6 +24,7 @@ from runner.logical_plan.plans import (
     LogicalProjection,
     LogicalScan,
 )
+from runner.trace_hooks import trace_runner_operation
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,9 +36,14 @@ class SeqScanExecutor(RowExecutor):
 
     @property
     def output_schema(self) -> LogicalSchema:
+        """返回物理表的完整绑定 Schema，其顺序与 Storage 行值一致。"""
+
         return self.schema
 
+    @trace_runner_operation("runtime", "seq_scan.rows")
     def rows(self, context: ExecutionContext) -> Iterator[ExecRow]:
+        """惰性扫描整表，把 Storage Row 转换为保留 row_id 的 ExecRow。"""
+
         # Storage.scan 的 values 顺序与 LogicalScan.schema.columns 顺序一致
         for row_id, values in context.storage.scan(self.table):
             yield ExecRow(row_id=row_id, values=values)
@@ -52,9 +58,14 @@ class FilterExecutor(RowExecutor):
 
     @property
     def output_schema(self) -> LogicalSchema:
+        """过滤不改变列集与位置，因此直接返回子算子 Schema。"""
+
         return self.child.output_schema
 
+    @trace_runner_operation("runtime", "filter.rows")
     def rows(self, context: ExecutionContext) -> Iterator[ExecRow]:
+        """拉取子算子行并求值已绑定谓词，仅下传结果为真的行。"""
+
         # 命中行原样下传，列位置与 row_id 都不变；AND 短路由 eval_expr 负责
         for row in self.child.rows(context):
             if eval_expr(self.predicate, row.values):
@@ -77,9 +88,14 @@ class NestedLoopJoinExecutor(RowExecutor):
 
     @property
     def output_schema(self) -> LogicalSchema:
+        """返回左右 Schema 按列顺序合并后的 JOIN 输出结构。"""
+
         return self.schema
 
+    @trace_runner_operation("runtime", "nested_loop_join.rows")
     def rows(self, context: ExecutionContext) -> Iterator[ExecRow]:
+        """物化右侧一次，对每个左行比较 ON，惰性产出匹配的拼接行。"""
+
         # 右侧只执行一次，避免为每个左行重复扫描 Storage。
         right_rows = tuple(self.right.rows(context))
         for left_row in self.left.rows(context):
@@ -99,9 +115,14 @@ class ProjectionExecutor(RowExecutor):
 
     @property
     def output_schema(self) -> LogicalSchema:
+        """返回已按 SELECT 列表重新排列和编号的输出 Schema。"""
+
         return self.schema
 
+    @trace_runner_operation("runtime", "projection.rows")
     def rows(self, context: ExecutionContext) -> Iterator[ExecRow]:
+        """按绑定列索引投影每条子行，保留 SQL 书写顺序和重复列。"""
+
         # 逐项按 columns 顺序读取 child 的行值，保留重复列与书写顺序
         for row in self.child.rows(context):
             values = tuple(
@@ -117,7 +138,10 @@ class SelectExecutor(StatementExecutor):
 
     root: RowExecutor
 
+    @trace_runner_operation("runtime", "select.execute")
     def execute(self, context: ExecutionContext) -> QueryResult:
+        """完全消费根行流，构造表头与行元组均不可缺省的 SELECT 结果。"""
+
         return QueryResult(
             columns=tuple(
                 column.name

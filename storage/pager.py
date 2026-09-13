@@ -19,6 +19,9 @@
 
 实现阶段：M1 已完成（固定页、追加页、页 0）；M3 已完成（read/write 走
 BufferPool）；M4 已完成（空闲页链表 free_page/alloc 弹链/free_pages）。
+
+追踪：带 BufferPool 参数的页级原语会记录真实返回值或 E_STORAGE；
+create_table_file 和纯校验辅助函数不独立生成事件，避免重复噪声。
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from storage.constants import (
     TABLE_FILE_MAGIC,
     TABLE_FILE_VERSION,
 )
+from storage.trace_hooks import trace_storage_operation
 
 
 # 页 0 头部 20 B：magic(4s) + version(H) + reserved(H) + next_row_id(Q) + free_head(I)
@@ -84,6 +88,7 @@ def _table_page_count(file_path: Path) -> int:
     return size // PAGE_SIZE
 
 
+@trace_storage_operation("pager", "page_count")
 def page_count(pool: BufferPool, file_path: Path) -> int:
     """返回文件当前页数（engine scan/遍历用；缺失/半页 → E_STORAGE）。
 
@@ -93,6 +98,7 @@ def page_count(pool: BufferPool, file_path: Path) -> int:
     return _table_page_count(file_path)
 
 
+@trace_storage_operation("pager", "free_pages")
 def free_pages(pool: BufferPool, file_path: Path) -> list[int]:
     """遍历空闲页链表，返回链序（最新释放在前）的页号列表（D05）。
 
@@ -147,6 +153,7 @@ def _check_page_no(file_path: Path, page_no: int, page_count: int) -> None:
         )
 
 
+@trace_storage_operation("pager", "alloc_page")
 def alloc_page(pool: BufferPool, file_path: Path) -> int:
     """分配一个数据页号：优先弹空闲页链表，空链表才在文件末尾追加（D05/D06）。
 
@@ -193,6 +200,7 @@ def alloc_page(pool: BufferPool, file_path: Path) -> int:
     return new_page_no
 
 
+@trace_storage_operation("pager", "free_page")
 def free_page(pool: BufferPool, file_path: Path, page_no: int) -> None:
     """把整页空的数据页还进空闲链表（D05）。
 
@@ -220,6 +228,7 @@ def free_page(pool: BufferPool, file_path: Path, page_no: int) -> None:
     write_page(pool, file_path, 0, updated_page0)
 
 
+@trace_storage_operation("pager", "read_page")
 def read_page(pool: BufferPool, file_path: Path, page_no: int) -> bytes:
     """读一整页返回 bytes 副本。
 
@@ -237,6 +246,7 @@ def read_page(pool: BufferPool, file_path: Path, page_no: int) -> bytes:
         pool.unpin_page(file_path, page_no)
 
 
+@trace_storage_operation("pager", "write_page")
 def write_page(
     pool: BufferPool, file_path: Path, page_no: int, data: bytes
 ) -> None:

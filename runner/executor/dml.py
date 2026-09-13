@@ -15,6 +15,7 @@ from runner.executor.context import ExecutionContext
 from runner.executor.dql import build_row_executor
 from runner.logical_plan.expressions import BoundAssignment, BoundLiteral
 from runner.logical_plan.plans import LogicalDelete, LogicalInsert, LogicalUpdate
+from runner.trace_hooks import trace_runner_operation
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +25,10 @@ class InsertExecutor(StatementExecutor):
     table: str
     values: tuple[BoundLiteral, ...]
 
+    @trace_runner_operation("runtime", "insert.execute")
     def execute(self, context: ExecutionContext) -> QueryResult:
+        """取出绑定字面量的 Python 值写入目标表，成功时报告影响一行。"""
+
         context.storage.insert(
             self.table,
             tuple(value.value for value in self.values),
@@ -40,7 +44,10 @@ class UpdateExecutor(StatementExecutor):
     assignments: tuple[BoundAssignment, ...]
     child: RowExecutor
 
+    @trace_runner_operation("runtime", "update.execute")
     def execute(self, context: ExecutionContext) -> QueryResult:
+        """先物化所有匹配行，再按绑定列位置整行替换并返回影响行数。"""
+
         # 必须先完全消费 child，结束 Storage.scan() 迭代后再开始写
         matched_rows = tuple(self.child.rows(context))
 
@@ -65,7 +72,10 @@ class DeleteExecutor(StatementExecutor):
     table: str
     child: RowExecutor
 
+    @trace_runner_operation("runtime", "delete.execute")
     def execute(self, context: ExecutionContext) -> QueryResult:
+        """先物化匹配 row_id，再逐一删除，避免在 Storage.scan 迭代期间改页。"""
+
         row_ids = tuple(
             row.row_id
             for row in self.child.rows(context)

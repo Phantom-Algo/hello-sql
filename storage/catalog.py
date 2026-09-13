@@ -11,6 +11,9 @@ V1 catalog.json 只作为迁移输入（见 catalog_migration.py）。
 - file_name == <表名>.table；系统表不出现在本注册表中；
 - 任何结构非法 / 记录与文件不一致 → E_STORAGE；
 - 本层不做 SQL 语义检查（D13），只做注册表增删查与系统表持久化。
+
+追踪：公开和回滚操作都经由共享 BufferPool 发送事件，使界面能
+同时解释一次 DDL 的内存 Schema 改变和系统表写入。
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from contracts.errors import (
 from storage.cache import BufferPool
 from storage.constants import RESERVED_TABLE_PREFIX, TABLE_FILE_SUFFIX
 from storage.syscatalog import open_system_tables, system_table_paths
+from storage.trace_hooks import trace_storage_operation
 
 
 _IDENTIFIER_RE = re.compile(r"[a-z_][a-z0-9_]*\Z")
@@ -39,6 +43,17 @@ class Catalog:
     """本库 schema 的内存注册表 + 两张页式系统表持久化（M2）。"""
 
     def __init__(self, db_dir: str | Path, pool: BufferPool) -> None:
+        """绑定数据库目录和共享缓存池，打开但尚未加载系统表。
+
+        Args:
+            db_dir: 包含系统目录页文件的单个数据库目录。
+            pool: 由 DatabaseServer 持有的进程级共享 BufferPool；
+                它同时承载可选的 B 追踪回调。
+
+        Notes:
+            构造只建立引用；内存 Schema 由 ``load`` 校验并重建。
+        """
+
         self.db_dir = Path(db_dir)
         self._pool = pool
         self._systems = open_system_tables(self.db_dir, pool)
@@ -47,6 +62,7 @@ class Catalog:
 
     # ---- 加载与校验 ----
 
+    @trace_storage_operation("catalog", "load")
     def load(self) -> None:
         """扫描两张系统表并校验，重建内存注册表；任何损坏都抛 E_STORAGE。"""
         by_name: dict[str, int] = {}
@@ -155,6 +171,7 @@ class Catalog:
 
     # ---- 注册表增删查 ----
 
+    @trace_storage_operation("catalog", "register")
     def register(self, name: str, columns: Sequence[ColumnDef]) -> None:
         """登记新表：写两张系统表并 flush；失败时回滚系统行。"""
         if name in self.tables:
@@ -174,6 +191,7 @@ class Catalog:
         self.tables[name] = tuple(columns)
         self._table_row_ids[name] = table_id
 
+    @trace_storage_operation("catalog", "unregister")
     def unregister(self, name: str) -> None:
         """注销表：删两张系统表行并 flush；失败时按快照恢复。"""
         if name not in self.tables:
@@ -188,6 +206,7 @@ class Catalog:
         del self.tables[name]
         del self._table_row_ids[name]
 
+    @trace_storage_operation("catalog", "get")
     def get(self, name: str) -> tuple[ColumnDef, ...]:
         """查表结构（表不存在抛 E_TABLE_NOT_FOUND）。"""
         try:
@@ -195,10 +214,12 @@ class Catalog:
         except KeyError as exc:
             raise SqlError(E_TABLE_NOT_FOUND, f"table not found: {name}") from exc
 
+    @trace_storage_operation("catalog", "names")
     def names(self) -> list[str]:
         """返回全部用户表名（稳定排序，契约不承诺顺序）。"""
         return sorted(self.tables)
 
+    @trace_storage_operation("catalog", "flush")
     def flush(self) -> None:
         """把两张系统表的脏页写回磁盘。"""
         for path in system_table_paths(self.db_dir):
@@ -206,6 +227,7 @@ class Catalog:
 
     # ---- 内部：系统行写入与回滚 ----
 
+    @trace_storage_operation("catalog", "insert_system_rows")
     def _insert_table_rows(
         self, name: str, columns: Sequence[ColumnDef]
     ) -> int:
@@ -231,6 +253,7 @@ class Catalog:
             self._best_effort_delete_rows(table_id, column_row_ids)
             raise
 
+    @trace_storage_operation("catalog", "delete_system_rows")
     def _delete_table_rows(self, table_id: int) -> None:
         """删掉一个表的全部列行与表行，然后 flush。"""
         for row_id, values in list(self._systems.columns.scan()):
@@ -239,6 +262,7 @@ class Catalog:
         self._systems.tables.delete(table_id)
         self.flush()
 
+    @trace_storage_operation("catalog", "restore_table")
     def _restore_table(
         self, name: str, columns: tuple[ColumnDef, ...]
     ) -> None:
@@ -250,6 +274,7 @@ class Catalog:
             return
         self._table_row_ids[name] = table_id
 
+    @trace_storage_operation("catalog", "cleanup_rows_by_name")
     def _cleanup_rows_by_name(self, name: str) -> None:
         """清掉系统表里某个表名的任何残留行（用于恢复前清场）。"""
         stale_ids: set[int] = set()
@@ -262,6 +287,7 @@ class Catalog:
                 self._systems.columns.delete(row_id)
         self.flush()
 
+    @trace_storage_operation("catalog", "rollback_system_rows")
     def _best_effort_delete_rows(
         self, table_id: int | None, column_row_ids: Sequence[int]
     ) -> None:

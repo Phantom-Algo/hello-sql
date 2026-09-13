@@ -13,9 +13,16 @@ from contracts.errors import SqlError
 from contracts.result import ScriptResult
 from runner import Runner
 from storage import DatabaseServer
+from UI import QueryInspector
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """构建 HELLO-SQL 命令行参数解析器。
+
+    本函数只声明参数、帮助和版本信息，不创建数据目录，也不启动
+    数据库。因此 ``--help`` 和 ``--version`` 可以在任意目录安全运行。
+    """
+
     parser = argparse.ArgumentParser(description="hello-sql · 轻量级本地 SQL 数据库")
     parser.add_argument("-D", "--database", default="main", help="初始数据库（默认 main）")
     parser.add_argument(
@@ -41,6 +48,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def resolve_data_dir(argument: Path | None) -> Path:
+    """按显式参数、环境变量、用户默认值的顺序解析数据目录。
+
+    Args:
+        argument: ``--data-dir`` 传入的可选路径。
+
+    Returns:
+        已扩展用户目录并转为绝对路径的数据根目录。
+    """
+
     configured = os.environ.get("HELLO_SQL_DATA_DIR")
     path = argument if argument is not None else (
         Path(configured) if configured else Path.home() / ".hello-sql" / "data"
@@ -70,15 +86,28 @@ def print_script_result(runner: Runner, result: ScriptResult, *, rich: bool) -> 
 
 
 def main(argv: list[str] | None = None) -> int:
+    """装配存储、运行器和可视化追踪，然后执行选定模式。
+
+    交互模式、``-e`` 和 ``-f`` 都复用同一个 ``QueryInspector``。
+    B 路由器注入 DatabaseServer，C 路由器和编排器注入 Runner，
+    从而让 ``/inspect`` 能读到与实际 SQL 执行一致的完整记录。
+
+    Returns:
+        成功为 0，SQL/输入错误为 1，键盘中断为 130。
+    """
+
     args = build_parser().parse_args(argv)
     try:
         data_dir = resolve_data_dir(args.data_dir)
-        server = DatabaseServer(data_dir)
+        inspector = QueryInspector()
+        server = DatabaseServer(data_dir, trace_sink=inspector.storage_router)
         runner = Runner(
             server=server,
             parse=parse,
             parse_script=parse_script,
             current_database=args.database.lower(),
+            trace_sink=inspector.execution_router,
+            inspector=inspector,
         )
         if args.execute is not None:
             result = runner.execute_script(

@@ -23,6 +23,9 @@ row_id 不变量（D08）：
 OVERFLOW_PAYLOAD_SIZE 切片存在 OVFL 链页；删除/整行更新沿链回收。
 
 实现阶段：M2/M4/M5 已完成（行存取、空闲页回收、溢出页链与损坏矩阵）。
+
+追踪：TableEngine 的 CRUD、行定位、落盘和溢出页链都提交嵌套事件；
+惰性 scan 在实际迭代完成、失败或提前关闭时才结束记录。
 """
 
 from __future__ import annotations
@@ -73,6 +76,7 @@ from storage.pager import (
     read_page,
     write_page,
 )
+from storage.trace_hooks import trace_storage_operation
 
 
 # 记录编码格式（§8.1）：u64 row_id；INT=q；REAL=d；TEXT=u32 长度 + UTF-8。
@@ -338,6 +342,7 @@ class TableEngine:
                 f"row too large ({len(record)}B > MAX_ROW_BYTES {MAX_ROW_BYTES}B)",
             )
 
+    @trace_storage_operation("engine", "take_next_row_id")
     def _take_next_row_id(self) -> RowId:
         """取页 0 计数器并把 next_row_id+1 写回（D08：单调、持久化）。"""
         page0 = read_page(self._pool, self._path, 0)
@@ -347,6 +352,7 @@ class TableEngine:
         write_page(self._pool, self._path, 0, updated)
         return next_row_id
 
+    @trace_storage_operation("engine", "find_page_for_record")
     def _find_page_for(self, record_length: int) -> tuple[int, bytearray] | None:
         """在现有数据页里找能放下新记录的一页；没有返回 None。
 
@@ -360,6 +366,7 @@ class TableEngine:
                 return page_no, page
         return None
 
+    @trace_storage_operation("engine", "active_page_numbers")
     def _active_page_numbers(self) -> list[int]:
         """活动“数据页”页号：非 free list、且非溢出链页（M5 起含 OVFL 识别）。"""
         free = set(free_pages(self._pool, self._path))
@@ -374,6 +381,7 @@ class TableEngine:
             data_pages.append(page_no)
         return data_pages
 
+    @trace_storage_operation("engine", "write_or_free_page")
     def _write_or_free_page(self, page_no: int, page: bytearray) -> None:
         """整页有行 → 写回；重建后整页空 → 还进空闲页链表（D05/D15）。"""
         slot_count, _flags, _free_ptr = _parse_page_header(page)
@@ -396,6 +404,7 @@ class TableEngine:
                 return i
         return None
 
+    @trace_storage_operation("engine", "locate_row")
     def _locate(self, row_id: RowId) -> tuple[int, bytearray, int]:
         """定位 (页号, 页内容副本, 槽号)；找不到 → E_ROW_NOT_FOUND。
 
@@ -431,6 +440,7 @@ class TableEngine:
             raise SqlError(E_STORAGE, "corrupt overflow anchor: invalid fields")
         return row_id, first_page, total_len
 
+    @trace_storage_operation("engine", "alloc_overflow_chain")
     def _alloc_overflow_chain(self, record: bytes) -> int:
         """把整条编码记录切片写入一串溢出页，返回链首页号。
 
@@ -456,6 +466,7 @@ class TableEngine:
             write_page(self._pool, self._path, page_no, page)
         return page_numbers[0]
 
+    @trace_storage_operation("engine", "collect_overflow_chain")
     def _collect_overflow_chain(self, first_page: int, total_len: int) -> list[int]:
         """沿链校验并收集页号；自环/next 缺失/magic 错/total 不符 → E_STORAGE。"""
         collected: list[int] = []
@@ -476,6 +487,7 @@ class TableEngine:
             raise SqlError(E_STORAGE, "corrupt overflow chain: too short")
         return collected
 
+    @trace_storage_operation("engine", "read_overflow_record")
     def _read_overflow_record(self, first_page: int, total_len: int) -> bytes:
         """沿链收齐 payload 拼回完整编码记录。"""
         chunks: list[bytes] = []
@@ -490,11 +502,13 @@ class TableEngine:
             )
         return b"".join(chunks)
 
+    @trace_storage_operation("engine", "free_overflow_chain")
     def _free_overflow_chain(self, first_page: int, total_len: int) -> None:
         """先整体校验链，再逐页 free_page（D14：删除/整行更新沿链回收）。"""
         for page_no in self._collect_overflow_chain(first_page, total_len):
             free_page(self._pool, self._path, page_no)
 
+    @trace_storage_operation("engine", "place_record")
     def _place_record(self, row_id: RowId, record: bytes) -> int:
         """落一行：inline 走普通槽；超长先建溢出链、再在数据页放锚点槽。"""
         if len(record) <= INLINE_RECORD_LIMIT:
@@ -524,6 +538,7 @@ class TableEngine:
 
     # ---- 行级方法（供 Storage 门面调用）----
 
+    @trace_storage_operation("engine", "insert")
     def insert(self, values: Sequence[Value]) -> RowId:
         """分配新 row_id、落行并更新 rid→页 映射（§5.3）。"""
         row_id = self._take_next_row_id()
@@ -533,6 +548,7 @@ class TableEngine:
         self._rid_to_page[row_id] = page_no
         return row_id
 
+    @trace_storage_operation("engine", "scan")
     def scan(self) -> Iterator[Row]:
         """逐数据页解码（inline 直解，溢出行沿链拼回），顺带重建映射。"""
         seen_rids: set[RowId] = set()
@@ -563,6 +579,7 @@ class TableEngine:
                 self._rid_to_page[row[0]] = page_no
                 yield row
 
+    @trace_storage_operation("engine", "update")
     def update(self, row_id: RowId, values: Sequence[Value]) -> None:
         """整行替换：删旧行（溢出时沿链回收）→ 按新长度 inline/溢出新落。
 
@@ -591,6 +608,7 @@ class TableEngine:
         new_page_no = self._place_record(row_id, record)
         self._rid_to_page[row_id] = new_page_no
 
+    @trace_storage_operation("engine", "delete")
     def delete(self, row_id: RowId) -> None:
         """删除一行：溢出时先校验并回收整条链，再删槽紧凑（D14/D15/D05）。"""
         page_no, page, slot_index = self._locate(row_id)

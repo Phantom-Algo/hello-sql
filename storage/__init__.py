@@ -18,6 +18,8 @@
 
 红线：本目录禁止 import compiler / runner；只允许 import contracts 与标准库。
 B 不认识 SQL / AST / 执行计划；C 不知道 B 的文件格式与内部结构。
+可观测性通过构造 `DatabaseServer` 时的可选 `trace_sink` 注入；
+回调只接收普通字典，B 仍然不反向导入 UI，也不会为追踪重放业务操作。
 
 错误归属（M0 边界）：
 - 公开方法第一道闸：库/表名格式校验 → E_BAD_ARG（D13，先于一切存在性检查）；
@@ -61,6 +63,7 @@ from storage.constants import (
 from storage.engine import TableEngine
 from storage.pager import create_table_file
 from storage.syscatalog import create_empty_system_catalog
+from storage.trace_hooks import StorageTraceSink
 
 
 _IDENTIFIER_RE = re.compile(r"[a-z_][a-z0-9_]*\Z")
@@ -195,8 +198,22 @@ class DatabaseServer:
     - 同一 DatabaseServer 的所有 Storage 共享 BufferPool（D09/D16）。
     """
 
-    def __init__(self, data_dir: str | Path) -> None:
-        """建 data_dir → BufferPool(64) → 确保 main（目录 + catalog）。"""
+    def __init__(
+        self,
+        data_dir: str | Path,
+        trace_sink: StorageTraceSink | None = None,
+    ) -> None:
+        """创建数据目录、共享 BufferPool 与默认 main 数据库。
+
+        Args:
+            data_dir: 所有数据库目录的根路径。
+            trace_sink: 可选 B 内部调用追踪回调。它被注入进共享
+                BufferPool，Catalog、Cache、Pager 与 Engine 均通过该池
+                发布记录，存储层本身不导入 UI。
+
+        Raises:
+            SqlError: 数据目录或 main 数据库无法创建或校验时抛出。
+        """
         self._data_dir = Path(data_dir)
         try:
             self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -204,7 +221,7 @@ class DatabaseServer:
             raise SqlError(
                 E_STORAGE, f"cannot create data dir: {self._data_dir}"
             ) from exc
-        self._pool = BufferPool(DEFAULT_CACHE_CAPACITY)
+        self._pool = BufferPool(DEFAULT_CACHE_CAPACITY, trace_sink=trace_sink)
         self._catalogs: dict[Path, Catalog] = {}  # 库目录(绝对) → Catalog
         self._engines: dict[tuple[Path, str], TableEngine] = {}  # (库,表) → engine
 
@@ -241,6 +258,8 @@ class DatabaseServer:
     # ---- 内部辅助 ----
 
     def _db_path(self, name: str) -> Path:
+        """把已通过边界校验的数据库名映射为根目录下的路径。"""
+
         return self._data_dir / name
 
     @staticmethod
@@ -401,6 +420,8 @@ class Storage:
         return current
 
     def _table_file_path(self, name: str) -> Path:
+        """把已规范化的表名映射为当前数据库的物理表文件路径。"""
+
         return self._db_path / f"{name}{TABLE_FILE_SUFFIX}"
 
     def _engine_for(self, name: str, columns: Sequence[ColumnDef]) -> TableEngine:
