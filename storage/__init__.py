@@ -29,7 +29,6 @@ B 不认识 SQL / AST / 执行计划；C 不知道 B 的文件格式与内部结
 
 from __future__ import annotations
 
-import math
 import re
 import shutil
 from pathlib import Path
@@ -64,6 +63,7 @@ from storage.engine import TableEngine
 from storage.pager import create_table_file
 from storage.syscatalog import create_empty_system_catalog
 from storage.trace_hooks import StorageTraceSink
+from storage.valuecodec import normalize_value
 
 
 _IDENTIFIER_RE = re.compile(r"[a-z_][a-z0-9_]*\Z")
@@ -115,74 +115,23 @@ def _validate_columns(columns: Sequence[ColumnDef]) -> None:
             )
 
 
-_INT64_MIN = -(2**63)
-_INT64_MAX = 2**63 - 1
-
-
 def _normalize_values(
     columns: Sequence[ColumnDef], values: Sequence[Value]
 ) -> tuple[Value, ...]:
     """公开方法的值边界检查（§3.2）：个数 → 类型 → REAL 归一化为 float。
 
     返回归一化后的值元组，供 engine 直接编码；校验失败抛契约错误码。
+    单值规则抽到 storage/valuecodec.normalize_value，索引键复用同一套，
+    避免"表一套、索引一套"两个校验实现。
     """
     if len(values) != len(columns):
         raise SqlError(
             E_VALUE_COUNT,
             f"expected {len(columns)} values, got {len(values)}",
         )
-    normalized: list[Value] = []
-    for column, value in zip(columns, values):
-        if column.type is SqlType.INT:
-            if isinstance(value, bool) or type(value) is not int:
-                raise SqlError(E_TYPE_MISMATCH, f"INT column {column.name!r} got {value!r}")
-            if not _INT64_MIN <= value <= _INT64_MAX:
-                raise SqlError(
-                    E_TYPE_MISMATCH,
-                    f"INT column {column.name!r} out of 64-bit range",
-                )
-            normalized.append(value)
-        elif column.type is SqlType.REAL:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise SqlError(
-                    E_TYPE_MISMATCH, f"REAL column {column.name!r} got {value!r}"
-                )
-            try:
-                real_value = float(value)
-            except OverflowError:
-                # 巨 int（如 2**1024）转 double 会抛 OverflowError；
-                # 表示不了的数值按范围不符拒绝，不许把裸异常漏给调用方。
-                raise SqlError(
-                    E_TYPE_MISMATCH,
-                    f"REAL column {column.name!r} out of double range",
-                ) from None
-            if not math.isfinite(real_value):
-                raise SqlError(
-                    E_TYPE_MISMATCH,
-                    f"REAL column {column.name!r} must be finite, got {value!r}",
-                )
-            normalized.append(real_value)
-        elif column.type is SqlType.BOOLEAN:
-            if type(value) is not bool:
-                raise SqlError(
-                    E_TYPE_MISMATCH,
-                    f"BOOLEAN column {column.name!r} got {value!r}",
-                )
-            normalized.append(value)
-        else:  # SqlType.TEXT
-            if type(value) is not str:
-                raise SqlError(
-                    E_TYPE_MISMATCH, f"TEXT column {column.name!r} got {value!r}"
-                )
-            try:
-                value.encode("utf-8")
-            except UnicodeEncodeError:
-                raise SqlError(
-                    E_TYPE_MISMATCH,
-                    f"TEXT column {column.name!r} is not utf-8 encodable",
-                ) from None
-            normalized.append(value)
-    return tuple(normalized)
+    return tuple(
+        normalize_value(column, value) for column, value in zip(columns, values)
+    )
 
 
 class DatabaseServer:

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from contracts.ast import SqlType
 from contracts.errors import E_STORAGE, SqlError
 from storage.cache import BufferPool
 from storage.constants import (
@@ -57,7 +58,7 @@ def test_create_index_file_writes_page0_and_empty_leaf_root(tmp_path, pool) -> N
     """新建索引文件 = 页 0 头 + 一个空叶根页，且文件整页对齐。"""
     path = tmp_path / "idx_users_age.idx"
 
-    create_index_file(path)
+    create_index_file(path, SqlType.INT)
 
     assert path.is_file()
     assert path.stat().st_size == 2 * PAGE_SIZE
@@ -80,7 +81,7 @@ def test_create_index_file_writes_page0_and_empty_leaf_root(tmp_path, pool) -> N
 def test_open_index_file_returns_root_and_height(tmp_path, pool) -> None:
     """打开索引文件应读回页 0 的 root / height / free_head。"""
     path = tmp_path / "idx_users_age.idx"
-    create_index_file(path)
+    create_index_file(path, SqlType.INT)
 
     header = open_index_file(pool, path)
 
@@ -90,7 +91,7 @@ def test_open_index_file_returns_root_and_height(tmp_path, pool) -> None:
 def test_index_page0_rejects_wrong_magic(tmp_path, pool) -> None:
     """页 0 magic 不是 HSIX（这里改成 HSQL）→ E_STORAGE。"""
     path = tmp_path / "idx_users_age.idx"
-    create_index_file(path)
+    create_index_file(path, SqlType.INT)
     raw = bytearray(path.read_bytes())
     raw[INDEX_PAGE0_MAGIC_OFFSET : INDEX_PAGE0_MAGIC_OFFSET + 4] = TABLE_FILE_MAGIC
     path.write_bytes(bytes(raw))
@@ -101,7 +102,7 @@ def test_index_page0_rejects_wrong_magic(tmp_path, pool) -> None:
 def test_index_page0_rejects_unsupported_version(tmp_path, pool) -> None:
     """页 0 版本号不认识 → E_STORAGE。"""
     path = tmp_path / "idx_users_age.idx"
-    create_index_file(path)
+    create_index_file(path, SqlType.INT)
     raw = bytearray(path.read_bytes())
     raw[INDEX_PAGE0_VERSION_OFFSET : INDEX_PAGE0_VERSION_OFFSET + 2] = (
         INDEX_FILE_VERSION + 98
@@ -114,7 +115,7 @@ def test_index_page0_rejects_unsupported_version(tmp_path, pool) -> None:
 def test_index_file_rejects_half_page(tmp_path, pool) -> None:
     """文件长度不是页大小整数倍 → E_STORAGE。"""
     path = tmp_path / "idx_users_age.idx"
-    create_index_file(path)
+    create_index_file(path, SqlType.INT)
     path.write_bytes(path.read_bytes()[: PAGE_SIZE + 100])
 
     _expect_code(lambda: open_index_file(pool, path), E_STORAGE)
@@ -132,7 +133,7 @@ def test_create_index_file_creates_parent_directory(tmp_path, pool) -> None:
     """indexes/ 目录不存在时应自动创建（D27 每库一个索引目录）。"""
     path = tmp_path / "indexes" / "idx_users_age.idx"
 
-    create_index_file(path)
+    create_index_file(path, SqlType.INT)
 
     assert path.is_file()
     assert path.parent.is_dir()
@@ -149,7 +150,7 @@ def test_table_file_is_not_accepted_as_index_file(tmp_path, pool) -> None:
 def test_index_file_is_not_accepted_as_table_file(tmp_path, pool) -> None:
     """反向隔离：索引文件按表文件读也必须被拒绝（证明 kind 参数生效）。"""
     path = tmp_path / "idx_users_age.idx"
-    create_index_file(path)
+    create_index_file(path, SqlType.INT)
 
     _expect_code(lambda: read_page(pool, path, 0), E_STORAGE)
 
@@ -157,10 +158,10 @@ def test_index_file_is_not_accepted_as_table_file(tmp_path, pool) -> None:
 def test_create_index_file_overwrites_existing_file(tmp_path, pool) -> None:
     """重建索引文件应覆盖旧内容（与 create_table_file 的孤儿覆盖一致）。"""
     path = tmp_path / "idx_users_age.idx"
-    create_index_file(path)
+    create_index_file(path, SqlType.INT)
     path.write_bytes(path.read_bytes() + bytes(PAGE_SIZE))
 
-    create_index_file(path)
+    create_index_file(path, SqlType.INT)
 
     assert path.stat().st_size == 2 * PAGE_SIZE
     assert open_index_file(pool, path).root_page == 1

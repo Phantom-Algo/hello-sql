@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from contracts.ast import SqlType
 from contracts.errors import E_STORAGE, SqlError
 from storage.cache import BufferPool
 from storage.constants import INDEX_PAGE0_FREE_HEAD_OFFSET, PAGE_SIZE
@@ -34,7 +35,7 @@ def pool() -> BufferPool:
 @pytest.fixture
 def index_path(tmp_path) -> Path:
     path = tmp_path / "idx_users_age.idx"
-    create_index_file(path)
+    create_index_file(path, SqlType.INT)
     return path
 
 

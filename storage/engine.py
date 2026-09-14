@@ -34,15 +34,12 @@ import struct
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from contracts.ast import ColumnDef, SqlType, Value
+from contracts.ast import ColumnDef, Value
 from contracts.errors import E_ROW_NOT_FOUND, E_STORAGE, SqlError
 from contracts.storage import Row, RowId
 
 from storage.cache import BufferPool
 from storage.constants import (
-    BOOL_FALSE_BYTE,
-    BOOL_SIZE,
-    BOOL_TRUE_BYTE,
     INLINE_RECORD_LIMIT,
     MAX_ROW_BYTES,
     OVERFLOW_ANCHOR_FIRST_PAGE_OFFSET,
@@ -77,13 +74,11 @@ from storage.pager import (
     write_page,
 )
 from storage.trace_hooks import trace_storage_operation
+from storage.valuecodec import decode_value, encode_value
 
 
 # 记录编码格式（§8.1）：u64 row_id；INT=q；REAL=d；TEXT=u32 长度 + UTF-8。
 _RID = struct.Struct("<Q")
-_INT = struct.Struct("<q")
-_REAL = struct.Struct("<d")
-_TEXT_LEN = struct.Struct("<I")
 _PAGE_HEADER = struct.Struct("<HHI")   # u16 slot_count + u16 flags + u32 free_ptr
 _SLOT = struct.Struct("<II")           # u32 record_offset + u32 record_length
 _OVERFLOW_ANCHOR = struct.Struct("<QII")   # row_id + first_chain_page + total_len
@@ -100,18 +95,7 @@ def encode_record(
     """
     parts = [_RID.pack(row_id)]
     for column, value in zip(columns, values):
-        if column.type is SqlType.INT:
-            parts.append(_INT.pack(value))
-        elif column.type is SqlType.REAL:
-            parts.append(_REAL.pack(value))
-        elif column.type is SqlType.BOOLEAN:
-            parts.append(
-                bytes((BOOL_TRUE_BYTE if value else BOOL_FALSE_BYTE,))
-            )
-        else:  # SqlType.TEXT
-            raw = value.encode("utf-8")
-            parts.append(_TEXT_LEN.pack(len(raw)))
-            parts.append(raw)
+        parts.append(encode_value(column, value))
     return b"".join(parts)
 
 
@@ -126,36 +110,9 @@ def decode_record(record: bytes, columns: Sequence[ColumnDef]) -> Row:
         raise SqlError(E_STORAGE, "corrupt record: missing row_id") from exc
     pos = _RID.size
     values: list[Value] = []
-    try:
-        for column in columns:
-            if column.type is SqlType.INT:
-                (value,) = _INT.unpack_from(record, pos)
-                pos += _INT.size
-            elif column.type is SqlType.REAL:
-                (value,) = _REAL.unpack_from(record, pos)
-                pos += _REAL.size
-            elif column.type is SqlType.BOOLEAN:
-                raw = record[pos : pos + BOOL_SIZE]
-                if len(raw) < BOOL_SIZE:
-                    raise SqlError(E_STORAGE, "corrupt record: truncated boolean")
-                raw_byte = raw[0]
-                pos += BOOL_SIZE
-                if raw_byte not in (BOOL_FALSE_BYTE, BOOL_TRUE_BYTE):
-                    raise SqlError(E_STORAGE, "corrupt boolean value")
-                value = raw_byte == BOOL_TRUE_BYTE
-            else:  # SqlType.TEXT
-                (length,) = _TEXT_LEN.unpack_from(record, pos)
-                pos += _TEXT_LEN.size
-                raw = record[pos : pos + length]
-                if len(raw) < length:
-                    raise SqlError(E_STORAGE, "corrupt record: truncated text")
-                value = raw.decode("utf-8")
-                pos += length
-            values.append(value)
-    except struct.error as exc:
-        raise SqlError(E_STORAGE, "corrupt record: unexpected end") from exc
-    except UnicodeDecodeError as exc:
-        raise SqlError(E_STORAGE, "corrupt record: invalid utf-8 text") from exc
+    for column in columns:
+        value, pos = decode_value(column, record, pos)
+        values.append(value)
     if pos != len(record):
         raise SqlError(E_STORAGE, "corrupt record: trailing bytes")
     return (row_id, tuple(values))
