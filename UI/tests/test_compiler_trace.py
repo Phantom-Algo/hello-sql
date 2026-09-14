@@ -52,8 +52,11 @@ def test_lexer_events_keep_token_positions_offsets_and_eof() -> None:
         "end_offset": 8,
     }
     assert select_event.source_span == SourceSpan(2, 2, 2, 7)
+    assert "引出投影列表" in select_event.description
     assert dot_event.output_snapshot["token"]["lexeme"] == "."
+    assert "u.id" in dot_event.description
     assert eof_event.output_snapshot["token"]["type"] == "EOF"
+    assert "语法分析器检查完整性" in eof_event.description
     assert eof_event.source_span is None
 
 
@@ -71,6 +74,20 @@ def test_parser_events_show_real_rule_order_depth_and_consumption() -> None:
     assert "_parse_comparison_operator" in rules
     assert max(event.metrics["depth"] for event in parser.events) > 2
     assert parser.events[0].metrics["consumed_token_count"] > 0
+    assert parser.events[0].action == "解析单条 SQL"
+    assert any(event.action == "构建 SELECT" for event in parser.events)
+    assert any(event.action == "处理 NOT" for event in parser.events)
+    assert {event.input_snapshot["detail_level"] for event in parser.events} == {
+        "semantic", "technical"
+    }
+    assert all("递归深度" not in event.description for event in parser.events)
+    assert all(not event.action.startswith("执行语法规则") for event in parser.events)
+    technical = [
+        event for event in parser.events
+        if event.input_snapshot["detail_level"] == "technical"
+    ]
+    assert any("游标" in event.description for event in technical)
+    assert any("已校验并消费" in event.description for event in technical)
 
 
 def test_ast_stage_contains_v2_nodes_and_does_not_invent_child_spans() -> None:
@@ -88,6 +105,8 @@ def test_ast_stage_contains_v2_nodes_and_does_not_invent_child_spans() -> None:
     assert ast.events[0].source_span == result.statements[0].span
     assert all(event.source_span is None for event in ast.events[1:])
     assert ast.output_snapshot["trees"][0]["node_type"] == "SelectStmt"
+    assert "从 users 读取" in ast.events[0].description
+    assert any("u.id" in event.description for event in ast.events)
 
 
 def test_script_trace_preserves_original_sql_and_global_spans() -> None:
@@ -105,6 +124,8 @@ def test_script_trace_preserves_original_sql_and_global_spans() -> None:
     ]
     assert result.statements[1].span == SourceSpan(2, 3, 2, 11)
     assert spans.events[1].output_snapshot["sql"] == "USE Shop;"
+    assert "第 2 行第 3 列" in spans.events[1].description
+    assert "错误定位与界面点击联动" in spans.events[1].description
 
 
 def test_lexical_error_fails_lexer_and_skips_downstream() -> None:
@@ -134,6 +155,12 @@ def test_syntax_error_keeps_lexer_and_failed_parser_rule_chain() -> None:
     ]
     assert parser.error_code == "E_SYNTAX"
     assert any(event.output_snapshot["status"] == "failed" for event in parser.events)
+    failed_events = [
+        event for event in parser.events
+        if event.output_snapshot["status"] == "failed"
+    ]
+    assert all("E_SYNTAX" in event.description for event in failed_events)
+    assert all("处理到" in event.description for event in failed_events)
     assert parser.source_span == SourceSpan(1, 8, 1, 8)
 
 

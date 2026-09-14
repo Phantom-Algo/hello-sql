@@ -1,5 +1,5 @@
 /*
- * HELLO-SQL Query Flow Inspector 视觉系统。
+ * HELLO-SQL 查询流程检查器视觉系统。
  *
  * 首屏只突出查询原文、处理流水线和结构树；原始 JSON 由顶部开关按需显示。
  * 所有尺寸均使用响应式约束，不依赖固定截图宽度，并保留键盘焦点可见性。
@@ -513,7 +513,7 @@ h2 { margin-bottom: 0; font-size: 15px; }
 .inspector-drawer > summary::before { content: "+"; color: var(--blue); }
 .inspector-drawer[open] > summary::before { content: "−"; }
 
-/* 原始 JSON 默认彻底退出布局，只由顶部 RAW DATA 开关统一恢复。 */
+/* 原始 JSON 默认彻底退出布局，只由顶部“原始数据”开关统一恢复。 */
 .debug-only { display: none !important; }
 body.show-debug .debug-only { display: block !important; }
 .raw-data-panel { margin-top: 14px; overflow: hidden; background: rgba(4, 12, 23, 0.72); border: 1px solid rgba(67, 225, 245, 0.2); border-radius: 10px; }
@@ -522,8 +522,15 @@ body.show-debug .debug-only { display: block !important; }
 .panel-label { padding: 10px 12px; border-bottom: 1px solid rgba(90, 146, 207, 0.18); }
 .snapshot-grid pre, .link-detail pre { max-height: 240px; margin: 0; overflow: auto; padding: 12px; color: #a9bdd4; white-space: pre-wrap; overflow-wrap: anywhere; font: 9.5px/1.55 ui-monospace, monospace; }
 .events-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 2px 8px; }
+.event-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 12px 9px; padding: 9px 11px; color: #7894b3; background: rgba(35, 115, 189, 0.07); border: 1px solid rgba(83, 160, 244, 0.18); border-radius: 8px; font: 700 8.5px ui-monospace, monospace; }
+.event-toolbar[hidden] { display: none; }
+.technical-events-toggle { padding: 7px 10px; color: #72bcff; background: rgba(41, 132, 230, 0.1); border: 1px solid rgba(83, 160, 244, 0.38); border-radius: 7px; cursor: pointer; font: 800 8.5px ui-monospace, monospace; }
+.technical-events-toggle:hover { color: #d8edff; border-color: var(--blue); }
+.technical-events-toggle b { display: inline-grid; min-width: 18px; margin-left: 5px; place-items: center; padding: 2px 4px; color: #a8cdf4; background: rgba(45, 72, 106, 0.42); border-radius: 5px; }
 .event-list { display: grid; gap: 7px; padding: 0 12px 12px; }
 .event { display: grid; grid-template-columns: 28px 1fr auto; gap: 9px; padding: 10px 11px; color: var(--text); background: #07111f; border: 1px solid rgba(90, 146, 207, 0.18); border-radius: 8px; text-align: left; }
+.event-technical { background: rgba(5, 14, 27, 0.7); border-style: dashed; opacity: 0.82; }
+.event-technical strong::after { content: " · 底层"; color: #637e9d; font: 700 7px ui-monospace, monospace; }
 .event.linked { border-color: rgba(67, 225, 245, 0.4); }
 .event-seq, .event-time { color: #6f8aa9; font: 700 8px ui-monospace, monospace; }
 .event strong { font-size: 10px; }
