@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from compiler import parse, parse_script
-from contracts.errors import E_SYNTAX, E_TABLE_NOT_FOUND, ParseError
+from contracts.errors import E_BAD_ARG, E_SYNTAX, E_TABLE_NOT_FOUND, ParseError, SqlError
 from runner import Runner
 from storage import DatabaseServer
 from UI import InspectionModule, QueryInspector, TraceStatus, format_inspection_text
@@ -73,6 +73,33 @@ def test_script_assigns_one_trace_number_per_executed_statement(tmp_path):
     assert [trace.statement_index for trace in traces] == [1, 2, 3]
     assert [trace.statement_count for trace in traces] == [3, 3, 3]
     assert traces[2].source_span.start_line == 3
+
+
+def test_physical_mode_is_forwarded_through_the_inspector(tmp_path):
+    """强制物理模式在 inspector 路径下同样生效：非法取值与强制索引都要落地。"""
+
+    runner, _ = _traced_runner(tmp_path)
+    runner.execute_script(
+        "CREATE TABLE items (id INT, note TEXT);\n"
+        "INSERT INTO items VALUES (1, 'a');\n"
+        "CREATE INDEX idx_items_id ON items (id);"
+    )
+
+    forced = runner.execute("SELECT note FROM items WHERE id = 1", physical="index")
+    assert forced.rows == (("a",),)
+
+    script = runner.execute_script(
+        "SELECT note FROM items WHERE id = 1;", physical="index"
+    )
+    assert script.statements[0].result.rows == (("a",),)
+
+    with pytest.raises(SqlError) as info:
+        runner.execute("SELECT note FROM items", physical="index")
+    assert info.value.code == E_BAD_ARG
+
+    with pytest.raises(SqlError) as info:
+        runner.execute_script("SELECT note FROM items;", physical="fast")
+    assert info.value.code == E_BAD_ARG
 
 
 def test_compile_failure_is_inspectable_before_original_error_is_raised(tmp_path):

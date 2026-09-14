@@ -62,6 +62,11 @@ def _context(storage: FakeStorage) -> ExecutionContext:
     )
 
 
+def _forbidden_metadata(table: str) -> object:
+    """哨兵：DDL 语句没有 Scan，选路不该读统计或索引清单。"""
+    raise AssertionError(f"metadata read: {table}")
+
+
 def _builder(catalog: FakeCatalog) -> LogicalPlanBuilder:
     return LogicalPlanBuilder(catalog.describe)
 
@@ -123,13 +128,20 @@ def test_executor_builder_maps_index_ddl_to_executors(
     expected: type[StatementExecutor],
 ) -> None:
     catalog = FakeCatalog()
-    builder = ExecutorTreeBuilder(catalog.describe, lambda: "main")
+    builder = ExecutorTreeBuilder(
+        catalog.describe,
+        lambda: "main",
+        statistics=_forbidden_metadata,  # type: ignore[arg-type]
+        list_indexes=_forbidden_metadata,  # type: ignore[arg-type]
+    )
 
     executor = builder.build(plan)
 
     assert isinstance(executor, expected)
     # 索引 DDL 不进表结构缓存键，构建期不需要读目录
     assert catalog.calls == []
+    # 不含 Scan 的语句没有选路对象，规划期不读任何元数据
+    assert builder.last_access_paths == ()
 
 
 def test_create_index_executor_calls_storage_once() -> None:

@@ -48,6 +48,7 @@ from runner.logical_plan.optimizer.rules import (
     prune_and_eliminate,
     push_join_predicates,
 )
+from runner.physical.planner import BuildContext, PhysicalPlanner
 
 
 # ---------- 计划构造辅助 ----------
@@ -975,6 +976,14 @@ class EmptyExecutorTest(unittest.TestCase):
     def _forbidden_describe(table: str) -> object:
         raise AssertionError(f"describe called: {table}")
 
+    @staticmethod
+    def _forbidden_statistics(table: str) -> object:
+        raise AssertionError(f"statistics called: {table}")
+
+    @staticmethod
+    def _forbidden_indexes(table: str) -> object:
+        raise AssertionError(f"list_indexes called: {table}")
+
     def test_empty_plan_returns_header_and_no_rows(self) -> None:
         schema = _users()
         plan = _projection(
@@ -982,7 +991,15 @@ class EmptyExecutorTest(unittest.TestCase):
             ("id", "name"),
             LogicalEmpty(schema),
         )
-        executor = build_select_executor(plan, self._forbidden_describe)  # type: ignore[arg-type]
+        # 空计划不含 Scan：三个元数据回调都必须是"被调用即失败"的哨兵
+        build_context = BuildContext(
+            describe=self._forbidden_describe,  # type: ignore[arg-type]
+            planner=PhysicalPlanner(
+                statistics=self._forbidden_statistics,  # type: ignore[arg-type]
+                list_indexes=self._forbidden_indexes,  # type: ignore[arg-type]
+            ),
+        )
+        executor = build_select_executor(plan, build_context)
         context = ExecutionContext(
             server=self._NoStorage(),  # type: ignore[arg-type]
             storage=self._NoStorage(),  # type: ignore[arg-type]

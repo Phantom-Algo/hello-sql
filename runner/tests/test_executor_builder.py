@@ -101,11 +101,24 @@ def _scan_source_indexes(executor: object) -> tuple[int, ...]:
     return executor.source_indexes
 
 
+def _forbidden_statistics(table: str) -> object:
+    """哨兵：本文件的计划没有可翻译谓词，选路不该读统计。"""
+    raise AssertionError(f"statistics called: {table}")
+
+
+def _forbidden_indexes(table: str) -> object:
+    """哨兵：本文件的计划没有可翻译谓词，选路不该读索引清单。"""
+    raise AssertionError(f"list_indexes called: {table}")
+
+
 class ExecutorTreeBuilderCacheTest(unittest.TestCase):
     def setUp(self) -> None:
         self.catalog = FakeCatalog()
         self.builder = ExecutorTreeBuilder(
-            self.catalog.describe, self.catalog.current_database
+            self.catalog.describe,
+            self.catalog.current_database,
+            statistics=_forbidden_statistics,  # type: ignore[arg-type]
+            list_indexes=_forbidden_indexes,  # type: ignore[arg-type]
         )
 
     def test_repeated_statements_reuse_cached_schema(self) -> None:

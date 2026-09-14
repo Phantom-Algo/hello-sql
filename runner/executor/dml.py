@@ -1,7 +1,7 @@
 """DML 执行器：消费 INSERT / UPDATE / DELETE 三种计划，返回影响行数。
 
 UPDATE / DELETE 不重复实现扫描与过滤，其 child 通过 DQL 的
-build_row_executor 构建为 SeqScanExecutor / FilterExecutor。
+build_row_executor 构建为 SeqScanExecutor / IndexScanExecutor / FilterExecutor。
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ from contracts.result import QueryResult
 from runner.executor.base import RowExecutor, StatementExecutor
 from runner.executor.context import ExecutionContext
 from runner.executor.dql import build_row_executor
-from runner.logical_plan.builder import DescribeTable
 from runner.logical_plan.expressions import BoundAssignment, BoundLiteral
 from runner.logical_plan.plans import LogicalDelete, LogicalInsert, LogicalUpdate
+from runner.physical.planner import BuildContext
 from runner.trace_hooks import trace_runner_operation
 
 
@@ -96,7 +96,7 @@ DmlPlan: TypeAlias = LogicalInsert | LogicalUpdate | LogicalDelete
 
 def build_dml_executor(
     plan: DmlPlan,
-    describe_table: DescribeTable,
+    context: BuildContext,
 ) -> StatementExecutor:
     """把 DML 逻辑计划转换为语句级执行器。"""
     match plan:
@@ -109,12 +109,12 @@ def build_dml_executor(
             return UpdateExecutor(
                 table=plan.table,
                 assignments=plan.assignments,
-                child=build_row_executor(plan.child, describe_table),
+                child=build_row_executor(plan.child, context),
             )
         case LogicalDelete():
             return DeleteExecutor(
                 table=plan.table,
-                child=build_row_executor(plan.child, describe_table),
+                child=build_row_executor(plan.child, context),
             )
         case _:
             assert_never(plan)
