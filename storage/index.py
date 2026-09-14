@@ -554,10 +554,14 @@ class IndexTree:
         return left
 
     def _child_for_insert(self, page: bytes, probe: Value, row_id: int) -> int:
-        """最右规则：最后一个 `(键, rid) <= 探针` 的分隔项处往右走。
+        """精确下降（最右规则）：最后一个 `(键, rid) <= 探针` 的分隔项处往右走。
 
         与查找规则不同是刻意的：插入把所有重复键放到最右侧的候选叶，
         而查找从最左侧候选叶开始扫，两者配合才能既写对又读全。
+
+        插入与按 `(键, rid)` 精确删除都必须用它：只有 (键, rid) 的全局次序
+        才能唯一定位"包含该条目的叶子"。若删除误用最左规则，当目标恰好等于
+        某个分隔键时会往左走错叶子，报"条目不存在"。
         """
         left = first_child(page)
         for child, sep_rid, _key_bytes, sep_key in self._interior_entries(page):
@@ -600,8 +604,18 @@ class IndexTree:
         probe = normalize_key(self.column, key)
         root, _height = self._load()
         page_no = self._leaf_for(root, probe, 0)
+        total_pages = page_count(self.pool, self.path, kind=INDEX_FILE_KIND)
+        steps = 0
         result: list[int] = []
         while page_no != 0:
+            steps += 1
+            if steps > total_pages:
+                # 叶链成环或过长：损坏必须是 E_STORAGE，绝不能挂死。
+                raise SqlError(
+                    E_STORAGE,
+                    f"corrupt index file {self.path.name}: leaf chain cycle "
+                    f"or too long",
+                )
             page = self._read(page_no)
             for row_id, _key_bytes, value in self._leaf_entries(page):
                 if value < probe:
@@ -633,8 +647,17 @@ class IndexTree:
         page_no = (
             self._leftmost_leaf(root) if low is None else self._leaf_for(root, low, 0)
         )
+        total_pages = page_count(self.pool, self.path, kind=INDEX_FILE_KIND)
+        steps = 0
         result: list[int] = []
         while page_no != 0:
+            steps += 1
+            if steps > total_pages:
+                raise SqlError(
+                    E_STORAGE,
+                    f"corrupt index file {self.path.name}: leaf chain cycle "
+                    f"or too long",
+                )
             page = self._read(page_no)
             for row_id, _key_bytes, value in self._leaf_entries(page):
                 if low is not None:
@@ -818,7 +841,7 @@ class IndexTree:
             free_page(self.pool, self.path, page_no, kind=INDEX_FILE_KIND)
             return page_no
 
-        child = self._child_for_search(page, probe, row_id)
+        child = self._child_for_insert(page, probe, row_id)
         freed = self._delete_from(child, probe, row_id, root_page)
         if freed is None:
             return None
