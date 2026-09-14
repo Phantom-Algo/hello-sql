@@ -54,22 +54,12 @@ class ExecutorTreeBuilder:
         self,
         describe_table: DescribeTable,
         current_database: CurrentDatabase,
-    ) -> None:
-        self._describe_table = describe_table
-        self._current_database = current_database
-        self._schema_cache: dict[tuple[str, str], TableInfo] = {}
-
-    def __init__(
-        self,
-        describe_table: DescribeTable,
-        current_database: CurrentDatabase,
         trace_sink: RunnerTraceSink | None = None,
     ) -> None:
         self._describe_table = describe_table
         self._current_database = current_database
         self._schema_cache: dict[tuple[str, str], TableInfo] = {}
         self._trace_sink = trace_sink
-
 
     @trace_runner_operation("executor", "build_executor_tree")
     def build(self, plan: LogicalPlan) -> StatementExecutor:

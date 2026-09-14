@@ -19,8 +19,8 @@ from contracts.storage import BaseDatabaseServer, TableInfo
 from runner.executor.builder import ExecutorTreeBuilder
 from runner.executor.context import ExecutionContext
 from runner.logical_plan.builder import LogicalPlanBuilder
-from runner.trace_hooks import RunnerTraceSink
 from runner.logical_plan.optimizer import LogicalOptimizer, OptimizationLog
+from runner.trace_hooks import RunnerTraceSink
 
 
 DEFAULT_DATABASE = "main"
@@ -106,19 +106,56 @@ class Runner:
             self._describe_current_table,
             trace_sink=trace_sink,
         )
-        self._executor_tree_builder = ExecutorTreeBuilder()
+        self._logical_optimizer = LogicalOptimizer()
+        # 构建期需要「当前库名 + 表结构」两个动态回调：同名表可能存在多个库，
+        # 库名必须每次现取，不能在建 Runner 时固化成常量。
+        self._executor_tree_builder = ExecutorTreeBuilder(
+            self._describe_current_table,
+            self._current_database_name,
+            trace_sink=trace_sink,
+        )
+        self._last_optimization_log: OptimizationLog | None = None
 
     @property
     def current_database(self) -> str:
         """返回当前会话所连接的数据库名。"""
         return self._context.current_database
 
+    @property
+    def last_optimization_log(self) -> OptimizationLog | None:
+        """最近一条语句的优化日志；关闭优化或尚未执行语句时为 None。"""
+        return self._last_optimization_log
+
+    @property
+    def inspector(self) -> RunnerInspector | None:
+        """返回当前会话的可选追踪编排器。
+
+        终端只通过这个只读属性实现 ``/inspect``，不接触 Runner 的
+        Parser、Executor 或 Storage 内部状态。
+        """
+
+        return self._inspector
+
     def _describe_current_table(self, table: str) -> TableInfo:
         """动态读取当前 Storage 的表结构，保证 USE 后访问新数据库。"""
         return self._context.storage.describe(table)
 
-    def execute(self, sql: str) -> QueryResult:
-        """执行一条 SQL，并原样返回执行器产生的结果。"""
+    def _current_database_name(self) -> str:
+        """动态读取当前库名，作为执行器构建期表结构缓存的键。"""
+        return self._context.current_database
+
+    def execute(self, sql: str, *, optimize: bool = True) -> QueryResult:
+        """执行一条 SQL，并原样返回执行器产生的结果。
+
+        optimize 逐语句生效，只影响是否经过逻辑优化器，不影响绑定阶段，
+        因此开关前后名称绑定与类型错误的行为完全一致。
+
+        开启 inspector 时由编排器负责真实解析与执行，它走默认的
+        optimize=True；关闭优化器的批量对比请直接用非 inspector 路径。
+        """
+
+        if self._inspector is not None:
+            return self._inspector.execute(self, sql)
         statement = self._parse(sql)
         return self._execute_statement(statement, optimize=optimize)
 
@@ -182,7 +219,8 @@ class Runner:
 
         整段脚本先由 parse_script 解析；解析错误直接向调用方抛出。
         stop_on_error 只控制名称绑定和执行阶段的 SqlError；optimize 透传给
-        每条语句，使基准工具能对整段脚本统一关闭优化器。
+        每条语句，使基准工具能对整段脚本统一关闭优化器。启用 inspector 时
+        交给编排器执行，optimize 与 execute 一样不参与该路径。
         """
         if self._inspector is not None:
             return self._inspector.execute_script(
