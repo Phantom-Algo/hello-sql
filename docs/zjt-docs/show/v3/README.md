@@ -425,21 +425,41 @@ printf "SELECT id FROM wide_facts WHERE id = 42;\n/inspect C\n/quit\n" \
 ```text
 Query #1 trace-000001 [SUCCESS] module=C
 01 C REPL [SUCCESS] events=1 elapsed=0.000ms
-10 C Binder [SUCCESS] events=5 elapsed=0.135ms
-11 C Logical Plan [SUCCESS] events=1 elapsed=0.163ms
-13 C Executor Tree [SUCCESS] events=2 elapsed=0.251ms
-14 C Runtime [SUCCESS] events=4 elapsed=0.119ms
+10 C Binder [SUCCESS] events=5 elapsed=0.387ms
+11 C Logical Plan [SUCCESS] events=1 elapsed=0.437ms
+12 C Optimizer [SUCCESS] events=1 elapsed=0.163ms
+13 C Executor Tree [SUCCESS] events=2 elapsed=1.510ms
+14 C Runtime [SUCCESS] events=4 elapsed=0.789ms
 ```
 
-文本模式只给阶段级摘要，选路理由要看浏览器查看器或 §4 的证据脚本。
+文本模式只给阶段级摘要：第 12 阶段的规则命中明细、以及选路理由，都要看
+浏览器查看器或 §4 的证据脚本。
 
-### 8.3 一个必须知道的现状
+### 8.3 第 12 阶段看什么
 
-**追踪里第 12 阶段 `C Optimizer` 仍显示 `[DISABLED] events=0`**，而优化器
-实际是运行的（§7 的日志就是证据）。原因是追踪层 `UI/execution_trace.py`
-里的 Optimizer 阶段还是 V2 的占位实现，尚未接 `OptimizationLog`；
-C 的优化器设计文档也明确把「接追踪器」列为本轮范围之外。
-所以**不要把这一行当作优化器没生效**，验收优化器请看 §7。
+`C Optimizer` 不再是占位阶段：它在每条语句上提交一条真实记录，阶段输出
+`optimization` 直接给出轮数、是否触顶、逐规则命中数与改写前后的单行对照：
+
+```json
+{
+  "rounds": 2,
+  "hit_limit": false,
+  "application_count": 2,
+  "rule_hits": {"fold_constants": 1, "prune_and_eliminate": 1},
+  "applications": [
+    {"rule": "fold_constants", "summary": "折叠 1 处常量表达式",
+     "plan_before": "Projection -> Filter -> Scan(t×2)",
+     "plan_after":  "Projection -> Filter -> Scan(t×2)"},
+    {"rule": "prune_and_eliminate", "summary": "裁剪 1 处来源（列 -1）；删除 1 处恒真 Filter",
+     "plan_before": "Projection -> Filter -> Scan(t×2)",
+     "plan_after":  "Projection -> Scan(t×1)"}
+  ]
+}
+```
+
+阶段状态按真实原因区分：跑过是 `SUCCESS`，`optimize=False` 是 `DISABLED`
+（带 `reason`），绑定失败没跑到是 `SKIPPED`。三条口径分别对应开关打开、
+开关关闭与上游失败，验收优化器自身仍以 §7 的日志为准。
 
 ## 9. 其他你可能没注意到的功能
 
@@ -532,7 +552,7 @@ for column in stats.columns:                # columns 按建表列序完整返�
 .venv/bin/python -m pytest -q
 ```
 
-当前基线：**1217 passed**。C 模块单独的用例：
+当前基线：**1235 passed**。C 模块单独的用例：
 
 ```bash
 .venv/bin/python -m pytest runner/tests -q
@@ -543,11 +563,11 @@ for column in stats.columns:                # columns 按建表列序完整返�
 
 | 项 | 现状 | 影响 |
 |---|---|---|
-| 追踪的 Optimizer 阶段 | 固定显示 `DISABLED`，未接 `OptimizationLog` | §8.3；不影响优化器实际生效 |
 | 基准工具 F8 | 仓库里没有 `bench/`，未落地 | 没有三模式对比报告文件，本文 §6 用证据脚本替代 |
 | `EXPLAIN` | 不存在 | 选路理由只能从追踪或 Python API 读 |
 | SQL 注释 | 词法不支持 `--` / `#` | 测试脚本不能带注释 |
 | TUI 索引 / 统计查看 | 无对应命令 | 需用 §9.4 的 Python 接口 |
+| TUI 优化开关 | 无 `/optimize` 命令 | 开关只能走 `execute`/`execute_script` 的关键字参数 |
 | 索引能力边界 | 不支持 UNIQUE、多列组合索引、索引覆盖扫描 | 按设计文档 §2.2 属本版非目标 |
 | 统计口径 | 列级统计为最多 16 页的有界采样 | 大表 `distinct_count` / `max_value` 会偏低（§6 已说明） |
 

@@ -39,7 +39,7 @@ def _prepare_users(runner: Runner) -> None:
 
 
 def test_select_builds_all_c_stages_and_runtime_statistics(tmp_path) -> None:
-    """SELECT 应展示四个真实 C 阶段及一个明确禁用的优化阶段。"""
+    """SELECT 应展示五个真实 C 阶段，优化阶段带规则日志。"""
 
     router = ExecutionTraceRouter()
     runner = _runner(tmp_path, router)
@@ -63,7 +63,7 @@ def test_select_builds_all_c_stages_and_runtime_statistics(tmp_path) -> None:
     assert [stage.status for stage in stages] == [
         TraceStatus.SUCCESS,
         TraceStatus.SUCCESS,
-        TraceStatus.DISABLED,
+        TraceStatus.SUCCESS,
         TraceStatus.SUCCESS,
         TraceStatus.SUCCESS,
     ]
@@ -71,6 +71,12 @@ def test_select_builds_all_c_stages_and_runtime_statistics(tmp_path) -> None:
     plan = _stage(stages, "c.logical_plan")
     assert plan.output_snapshot["last_result"]["value_type"] == (
         "LogicalProjection"
+    )
+    optimizer = _stage(stages, "c.optimizer")
+    assert [event.action for event in optimizer.events] == ["optimizer.optimize"]
+    assert optimizer.output_snapshot["optimization"]["rounds"] >= 1
+    assert optimizer.output_snapshot["last_result"]["value_type"] == (
+        "OptimizationLog"
     )
     executor = _stage(stages, "c.executor")
     assert executor.output_snapshot["last_result"]["value_type"] == (
@@ -88,6 +94,79 @@ def test_select_builds_all_c_stages_and_runtime_statistics(tmp_path) -> None:
         "returned_rows": 1,
         "affected_rows": None,
     }
+
+
+def test_optimizer_stage_reports_rule_hits_with_plan_before_and_after(
+    tmp_path,
+) -> None:
+    """规则命中应给出规则名、摘要与改写前后的一行计划对照。
+
+    恒真谓词保证规则必然命中：常量折叠消掉比较，裁剪再收起多余的列，
+    否则「阶段是 SUCCESS 但命中为空」也可能让断言误通过。
+    """
+
+    router = ExecutionTraceRouter()
+    runner = _runner(tmp_path, router)
+    _prepare_users(runner)
+
+    with router.capture() as collector:
+        result = runner.execute("SELECT id FROM users WHERE 1 = 1;")
+
+    assert result.rows == ((1,), (2,))
+    optimizer = _stage(collector.build_stages(), "c.optimizer")
+    optimization = optimizer.output_snapshot["optimization"]
+    assert optimization["application_count"] >= 1
+    assert optimization["hit_limit"] is False
+    assert sum(optimization["rule_hits"].values()) == optimization[
+        "application_count"
+    ]
+    applications = optimization["applications"]
+    assert len(applications) == optimization["application_count"]
+    for application in applications:
+        assert application["rule"] in optimization["rule_hits"]
+        assert application["summary"]
+        # 前后形态是规则自述的紧凑单行表示，追踪层不重新渲染计划树
+        assert "\n" not in application["plan_before"]
+        assert "\n" not in application["plan_after"]
+
+
+def test_disabled_optimizer_switch_is_reported_as_disabled(tmp_path) -> None:
+    """optimize=False 应显示为显式关闭，并保留开关原因。"""
+
+    router = ExecutionTraceRouter()
+    runner = _runner(tmp_path, router)
+    _prepare_users(runner)
+
+    with router.capture() as collector:
+        result = runner.execute(
+            "SELECT id FROM users WHERE enabled = TRUE;", optimize=False
+        )
+
+    assert result.rows == ((1,),)
+    optimizer = _stage(collector.build_stages(), "c.optimizer")
+    assert optimizer.status is TraceStatus.DISABLED
+    assert optimizer.output_snapshot["optimization"] == {
+        "reason": "optimize=False"
+    }
+    assert [event.action for event in optimizer.events] == ["optimizer.optimize"]
+    assert optimizer.metrics["disabled_count"] == 1
+
+
+def test_optimizer_stage_is_skipped_when_binding_fails(tmp_path) -> None:
+    """绑定失败的语句没有计划可优化，阶段必须是 SKIPPED 而不是 DISABLED。"""
+
+    router = ExecutionTraceRouter()
+    runner = _runner(tmp_path, router)
+    runner.execute("CREATE TABLE users (id INT);")
+
+    with router.capture() as collector:
+        with pytest.raises(SqlError):
+            runner.execute("SELECT missing FROM users;")
+
+    optimizer = _stage(collector.build_stages(), "c.optimizer")
+    assert optimizer.status is TraceStatus.SKIPPED
+    assert optimizer.events == ()
+    assert not optimizer.output_snapshot
 
 
 def test_join_runtime_records_each_scan_and_operator_row_count(tmp_path) -> None:
@@ -140,7 +219,7 @@ def test_binding_error_fails_plan_and_skips_executor_runtime(tmp_path) -> None:
     stages = collector.build_stages()
     assert _stage(stages, "c.binding").status is TraceStatus.FAILED
     assert _stage(stages, "c.logical_plan").status is TraceStatus.FAILED
-    assert _stage(stages, "c.optimizer").status is TraceStatus.DISABLED
+    assert _stage(stages, "c.optimizer").status is TraceStatus.SKIPPED
     assert _stage(stages, "c.executor").status is TraceStatus.SKIPPED
     assert _stage(stages, "c.runtime").status is TraceStatus.SKIPPED
     assert _stage(stages, "c.binding").error_code == E_COLUMN_NOT_FOUND
@@ -269,7 +348,10 @@ def test_c_stages_are_query_trace_json_compatible(tmp_path) -> None:
         result_summary={"row_count": len(result.rows or ())},
     )
     decoded = json.loads(trace.to_json())
-    assert decoded["stages"][2]["status"] == "DISABLED"
+    assert decoded["stages"][2]["status"] == "SUCCESS"
+    assert decoded["stages"][2]["output_snapshot"]["optimization"][
+        "application_count"
+    ] >= 1
     assert decoded["stages"][4]["output_snapshot"]["query_result"][
         "returned_rows"
     ] == 2

@@ -1,4 +1,4 @@
-"""Query-level tracing for C: Binder, plans, executors, and runtime.
+"""Query-level tracing for C: Binder, plans, optimizer, executors, and runtime.
 
 The runner core emits plain dictionaries through runner.trace_hooks.  This
 module snapshots AST, schema, plan, executor, row, and result objects while
@@ -8,8 +8,10 @@ binds or executes SQL a second time.
 
 ExecutionTraceRouter is intended to live as long as Runner.  One capture
 context is opened per statement, so concurrent and nested statements do not
-share events.  The current project has no optimizer; the collector exposes a
-real DISABLED optimizer stage instead of inventing an optimization result.
+share events.  The optimizer reports one record per statement: a success
+record carrying the OptimizationLog, or an explicit disabled record when the
+Runner switch is off.  A statement whose binding already failed reports no
+optimizer record at all, so the stage stays SKIPPED rather than DISABLED.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from threading import RLock
 from UI.trace_models import StageTrace, TraceEvent, TraceOwner, TraceStatus
 
 
-_COMPONENTS = ("binding", "logical_plan", "executor", "runtime")
+_COMPONENTS = ("binding", "logical_plan", "optimizer", "executor", "runtime")
 _STAGE_CONFIG: dict[str, tuple[str, int, str, str, str, str]] = {
     "binding": (
         "c.binding",
@@ -44,6 +46,14 @@ _STAGE_CONFIG: dict[str, tuple[str, int, str, str, str, str]] = {
         "Build an immutable plan tree from the bound statement.",
         "bound statement",
         "LogicalPlan tree",
+    ),
+    "optimizer": (
+        "c.optimizer",
+        12,
+        "Optimizer",
+        "Apply the enabled rewrite rules and report the rule log.",
+        "LogicalPlan tree",
+        "optimized LogicalPlan tree",
     ),
     "executor": (
         "c.executor",
@@ -125,7 +135,7 @@ class ExecutionTraceCollector:
             raise ValueError(f"unknown execution component: {component!r}")
         if not isinstance(operation, str) or not operation.strip():
             raise ValueError("execution operation must be non-empty")
-        if status not in {"success", "failed", "stopped"}:
+        if status not in {"success", "failed", "stopped", "disabled"}:
             raise ValueError(f"invalid execution status: {status!r}")
         if not _finite_number(started_at):
             raise ValueError("started_at must be finite")
@@ -135,6 +145,10 @@ class ExecutionTraceCollector:
         error_message = payload.get("error_message")
         if status == "failed" and error_code is None and error_message is None:
             raise ValueError("failed call requires error details")
+        if status == "disabled" and (
+            error_code is not None or error_message is not None
+        ):
+            raise ValueError("disabled call must not carry error details")
         if error_code is not None and not isinstance(error_code, str):
             raise TypeError("error_code must be str or None")
         if error_message is not None and not isinstance(error_message, str):
@@ -178,11 +192,11 @@ class ExecutionTraceCollector:
             return removed
 
     def build_stages(self) -> tuple[StageTrace, ...]:
-        """Build Binder, Plan, disabled Optimizer, Executor, and Runtime stages.
+        """Build Binder, Plan, Optimizer, Executor, and Runtime stages.
 
-        Implemented components with no call are SKIPPED, and components with
-        any failed call are FAILED.  Optimizer is always DISABLED because no
-        optimization rules exist in this version.
+        Implemented components with no call are SKIPPED, components whose
+        switch is explicitly off are DISABLED, and components with any failed
+        call are FAILED.
         """
 
         with self._lock:
@@ -195,20 +209,9 @@ class ExecutionTraceCollector:
         logical_plan = self._build_component_stage(
             "logical_plan", records, sequences
         )
+        optimizer = self._build_component_stage("optimizer", records, sequences)
         executor = self._build_component_stage("executor", records, sequences)
         runtime = self._build_component_stage("runtime", records, sequences)
-        optimizer = StageTrace(
-            stage_id="c.optimizer",
-            sequence=12,
-            owner=TraceOwner.C,
-            name="Optimizer",
-            description=(
-                "No logical optimizer exists yet; this stage is reserved for rules."
-            ),
-            status=TraceStatus.DISABLED,
-            input_contract="LogicalPlan tree",
-            output_contract="optimized LogicalPlan tree",
-        )
         return (binding, logical_plan, optimizer, executor, runtime)
 
     @staticmethod
@@ -220,7 +223,7 @@ class ExecutionTraceCollector:
         """Convert one implemented C component into a read-only stage.
 
         Args:
-            component: binding, logical_plan, executor, or runtime.
+            component: binding, logical_plan, optimizer, executor, or runtime.
             all_records: Every C record in completion order.
             sequences: Mapping from callback ordinal to playback sequence.
         """
@@ -250,6 +253,18 @@ class ExecutionTraceCollector:
             (item for item in records if item.status == "failed"),
             None,
         )
+        disabled = next(
+            (item for item in records if item.status == "disabled"),
+            None,
+        )
+        if disabled is not None:
+            description = f"{description} This stage was explicitly switched off."
+        if failed is not None:
+            status = TraceStatus.FAILED
+        elif disabled is not None:
+            status = TraceStatus.DISABLED
+        else:
+            status = TraceStatus.SUCCESS
         first_started = min(item.started_at for item in records)
         last_finished = max(
             item.started_at + item.elapsed_ms / 1000
@@ -261,7 +276,7 @@ class ExecutionTraceCollector:
             owner=TraceOwner.C,
             name=name,
             description=description,
-            status=TraceStatus.FAILED if failed else TraceStatus.SUCCESS,
+            status=status,
             input_contract=input_contract,
             output_contract=output_contract,
             input_snapshot={
@@ -277,6 +292,9 @@ class ExecutionTraceCollector:
                 ),
                 "stopped_count": sum(
                     item.status == "stopped" for item in records
+                ),
+                "disabled_count": sum(
+                    item.status == "disabled" for item in records
                 ),
             },
             elapsed_ms=(last_finished - first_started) * 1000,
@@ -337,6 +355,8 @@ def _record_to_event(
         description = "The call failed and preserved its original error."
     elif record.status == "stopped":
         description = "The row stream closed before full consumption."
+    elif record.status == "disabled":
+        description = "The feature was explicitly switched off; the call was not made."
     else:
         description = "The call completed successfully."
     return TraceEvent(
@@ -374,6 +394,9 @@ def _stage_output(
         ),
         "last_result": records[-1].result,
     }
+    if component == "optimizer":
+        # 规则命中摘要由 C 侧在优化器返回值上提取，查看器无需解析计划快照
+        output["optimization"] = records[-1].metrics
     if component == "runtime":
         output["operator_statistics"] = [
             {"action": event.action, **dict(event.metrics)}

@@ -18,6 +18,7 @@ from contracts.result import QueryResult, ScriptResult, StatementResult
 from contracts.storage import BaseDatabaseServer, IndexInfo, TableInfo, TableStats
 from runner.executor.builder import ExecutorTreeBuilder
 from runner.executor.context import ExecutionContext
+from runner.logical_plan.base import LogicalPlan
 from runner.logical_plan.builder import LogicalPlanBuilder
 from runner.logical_plan.optimizer import LogicalOptimizer, OptimizationLog
 from runner.physical.planner import (
@@ -25,7 +26,11 @@ from runner.physical.planner import (
     PhysicalMode,
     validate_physical_mode,
 )
-from runner.trace_hooks import RunnerTraceSink
+from runner.trace_hooks import (
+    RunnerTraceSink,
+    emit_disabled_operation,
+    trace_runner_operation,
+)
 
 
 DEFAULT_DATABASE = "main"
@@ -38,7 +43,8 @@ class RunnerInspector(Protocol):
 
     Runner 只知道编排器能执行单语句和脚本，不导入 UI 的具体类。
     这个依赖倒置保持运行层可独立测试，也使未启用追踪的调用方完全
-    沿用原有路径。物理模式由 Runner 校验后透传，编排器不得改写。
+    沿用原有路径。物理模式与优化开关由 Runner 校验后透传，编排器
+    不得改写，否则追踪记录的阶段状态会与实际执行不一致。
     """
 
     def execute(
@@ -46,6 +52,7 @@ class RunnerInspector(Protocol):
         runner: Runner,
         sql: str,
         *,
+        optimize: bool = True,
         physical: PhysicalMode = "auto",
     ) -> QueryResult:
         """执行并追踪一条 SQL，返回原 QueryResult。"""
@@ -58,6 +65,7 @@ class RunnerInspector(Protocol):
         sql: str,
         *,
         stop_on_error: bool = True,
+        optimize: bool = True,
         physical: PhysicalMode = "auto",
     ) -> ScriptResult:
         """执行并追踪完整 SQL 脚本，返回原 ScriptResult。"""
@@ -95,7 +103,7 @@ class Runner:
             current_database: 会话初始连接的数据库名。
             parse_script: 可选多语句解析入口；缺省时使用单语句适配。
             trace_sink: 可选 C 字典事件回调，同时注入绑定、
-                计划、Executor 构建和运行上下文。
+                计划、优化、Executor 构建和运行上下文。
             inspector: 可选查询追踪编排器。启用后由它在不重复
                 执行 SQL 的前提下组装 A/B/C 完整记录。
 
@@ -108,6 +116,9 @@ class Runner:
         self._parse = parse
         self._parse_script = parse_script or self._parse_as_single_statement_script
         self._inspector = inspector
+        # Runner 自己保留回调：优化开关的「关闭」分支没有可装饰的真实调用，
+        # 只能由编排层显式提交一条禁用记录。
+        self._trace_sink = trace_sink
         self._context = ExecutionContext(
             server=server,
             storage=storage,
@@ -189,13 +200,15 @@ class Runner:
         因此开关前后名称绑定与类型错误的行为完全一致。
 
         physical 决定每个 Scan 的访问路径，取值非法时在解析之前就抛 E_BAD_ARG。
-        开启 inspector 时由编排器负责真实解析与执行，它走默认的 optimize=True；
-        关闭优化器的批量对比请直接用非 inspector 路径。
+        开启 inspector 时由编排器负责真实解析与执行，optimize 与 physical
+        都原样透传，使追踪记录与实际执行落在同一个开关状态上。
         """
 
         validate_physical_mode(physical)
         if self._inspector is not None:
-            return self._inspector.execute(self, sql, physical=physical)
+            return self._inspector.execute(
+                self, sql, optimize=optimize, physical=physical
+            )
         statement = self._parse(sql)
         return self._execute_statement(
             statement, optimize=optimize, physical=physical
@@ -212,14 +225,29 @@ class Runner:
         self._last_access_paths = ()
         plan = self._logical_plan_builder.build(statement)
         if optimize:
-            log = self._logical_optimizer.optimize(plan)
+            log = self._optimize_plan(plan)
             self._last_optimization_log = log
             plan = log.optimized
         else:
             self._last_optimization_log = None
+            emit_disabled_operation(
+                self._trace_sink,
+                "optimizer",
+                "optimize",
+                reason="optimize=False",
+            )
         executor = self._executor_tree_builder.build(plan, physical=physical)
         self._last_access_paths = self._executor_tree_builder.last_access_paths
         return executor.execute(self._context)
+
+    @trace_runner_operation("optimizer", "optimize")
+    def _optimize_plan(self, plan: LogicalPlan) -> OptimizationLog:
+        """对已绑定的计划跑一遍逻辑优化器，并提交一条优化记录。
+
+        优化器本身不感知追踪：它只返回 OptimizationLog，由装饰器把该日志
+        与真实耗时一起上报，因此「计划」「产生计划的记录」与追踪事件同源。
+        """
+        return self._logical_optimizer.optimize(plan)
 
     def _parse_as_single_statement_script(self, sql: str) -> Script:
         """在未注入 parse_script 时为旧调用方提供单语句兼容。
@@ -267,7 +295,7 @@ class Runner:
         stop_on_error 只控制名称绑定和执行阶段的 SqlError；optimize 透传给
         每条语句，使基准工具能对整段脚本统一关闭优化器；physical 同样透传给
         每条语句，非法取值在跑第一条语句之前就报错。启用 inspector 时交给
-        编排器执行，optimize 与 execute 一样不参与该路径。
+        编排器执行，optimize 与 physical 一并透传。
         """
         validate_physical_mode(physical)
         if self._inspector is not None:
@@ -275,6 +303,7 @@ class Runner:
                 self,
                 sql,
                 stop_on_error=stop_on_error,
+                optimize=optimize,
                 physical=physical,
             )
         parsed_statements = self._parse_script(sql)

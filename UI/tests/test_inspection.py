@@ -102,6 +102,39 @@ def test_physical_mode_is_forwarded_through_the_inspector(tmp_path):
     assert info.value.code == E_BAD_ARG
 
 
+def test_optimizer_switch_is_forwarded_through_the_inspector(tmp_path):
+    """优化开关在 inspector 路径下同样生效：关闭时追踪显示 DISABLED。"""
+
+    runner, inspector = _traced_runner(tmp_path)
+    runner.execute_script(
+        "CREATE TABLE items (id INT, note TEXT);\n"
+        "INSERT INTO items VALUES (1, 'a');"
+    )
+    # 恒真谓词保证规则必然命中，开启态才有非空的规则日志可断言
+    sql = "SELECT note FROM items WHERE 1 = 1"
+
+    optimized = runner.execute(sql, optimize=True)
+    optimized_trace = inspector.hub.latest()
+    assert optimized_trace is not None
+    optimizer_stage = next(
+        stage for stage in optimized_trace.stages if stage.stage_id == "c.optimizer"
+    )
+    assert optimizer_stage.status is TraceStatus.SUCCESS
+    assert optimizer_stage.output_snapshot["optimization"]["applications"]
+
+    plain = runner.execute(sql, optimize=False)
+    plain_trace = inspector.hub.latest()
+    assert plain_trace is not None
+    optimizer_stage = next(
+        stage for stage in plain_trace.stages if stage.stage_id == "c.optimizer"
+    )
+    assert optimizer_stage.status is TraceStatus.DISABLED
+    assert optimizer_stage.output_snapshot["optimization"] == {
+        "reason": "optimize=False"
+    }
+    assert plain == optimized
+
+
 def test_compile_failure_is_inspectable_before_original_error_is_raised(tmp_path):
     """语法错误应保留 A 失败阶段和精确位置，同时继续抛 ParseError。"""
 
