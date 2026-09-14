@@ -162,3 +162,7 @@ MAX_INDEX_KEY_BYTES = (
     - INDEX_SLOT_SIZE
     - max(INDEX_RID_SIZE, INDEX_CHILD_PTR_SIZE)
 )
+
+# ---- V3 统计（D37/D38/D41）----
+# 列级统计只采样前 N 个活动数据页：结果是有界近似值，契约允许。
+STATS_SAMPLE_PAGES = 16

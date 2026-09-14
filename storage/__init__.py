@@ -49,7 +49,7 @@ from contracts.errors import (
     E_VALUE_COUNT,
     SqlError,
 )
-from contracts.storage import IndexInfo, Row, RowId, TableInfo
+from contracts.storage import IndexInfo, Row, RowId, TableInfo, TableStats
 
 from storage.cache import BufferPool
 from storage.catalog import Catalog
@@ -69,6 +69,7 @@ from storage.engine import TableEngine
 from storage.index import IndexTree, create_index_file
 from storage.pager import create_table_file
 from storage.syscatalog import create_empty_system_catalog
+from storage.stats import TableStatsProvider
 from storage.trace_hooks import StorageTraceSink
 from storage.valuecodec import normalize_value
 
@@ -198,6 +199,7 @@ class DatabaseServer:
         self._catalogs: dict[Path, Catalog] = {}  # 库目录(绝对) → Catalog
         self._engines: dict[tuple[Path, str], TableEngine] = {}  # (库,表) → engine
         self._index_trees: dict[tuple[Path, str], IndexTree] = {}  # (库,索引) → 树
+        self._stats: dict[tuple[Path, str], TableStatsProvider] = {}  # (库,表) → 统计
 
         main_dir = self._data_dir / "main"
         if main_dir.exists():
@@ -273,6 +275,9 @@ class DatabaseServer:
         stale_trees = [key for key in self._index_trees if key[0] == db_key]
         for key in stale_trees:
             del self._index_trees[key]
+        stale_stats = [key for key in self._stats if key[0] == db_key]
+        for key in stale_stats:
+            del self._stats[key]
 
     # ---- 库级公开方法 ----
 
@@ -476,6 +481,7 @@ class Storage:
                 E_STORAGE, f"cannot delete table file: {table_path}"
             ) from exc
         self._server._engines.pop(engine_key, None)
+        self._server._stats.pop((self._db_path, name), None)
 
     def list_tables(self) -> list[str]:
         """只读 catalog，返回本库表名（排序稳定，契约不承诺顺序）。"""
@@ -498,6 +504,7 @@ class Storage:
             self._index_tree(info, column).insert(normalized[position], row_id)
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
         self._flush_indexes(name)
+        self._invalidate_stats(name)
         return row_id
 
     def scan(self, name: str) -> Iterator[Row]:
@@ -522,6 +529,7 @@ class Storage:
                 tree.insert(normalized[position], row_id)
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
         self._flush_indexes(name)
+        self._invalidate_stats(name)
 
     def delete_row(self, name: str, row_id: RowId) -> None:
         """删除一行：engine 定位 → 移除槽 → 页内紧凑（D15）。"""
@@ -534,6 +542,7 @@ class Storage:
         engine.delete(row_id)
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
         self._flush_indexes(name)
+        self._invalidate_stats(name)
 
     # ---- 索引（V3 M3/D27–D46） ----
 
@@ -692,3 +701,29 @@ class Storage:
         engine = self._engine_for(table, columns)
         for row_id in rids:
             yield engine.get_row(row_id)
+
+    # ---- 统计（V3 M5/D37/D38/D41） ----
+
+    def _stats_provider(self, table: str) -> TableStatsProvider:
+        """取（或惰性创建）该表的统计提供者；与 engine 同样按库共享。"""
+        key = (self._db_path, table)
+        provider = self._server._stats.get(key)
+        if provider is None:
+            columns = self._live_catalog().get(table)
+            provider = TableStatsProvider(
+                self._engine_for(table, columns), columns, table
+            )
+            self._server._stats[key] = provider
+        return provider
+
+    def _invalidate_stats(self, table: str) -> None:
+        """写入后让列级统计失效（行数/页数由 engine 增量维护，无需重算）。"""
+        provider = self._server._stats.get((self._db_path, table))
+        if provider is not None:
+            provider.invalidate()
+
+    def statistics(self, table: str) -> TableStats:
+        """返回表的行数、数据页数与列级统计（规划期只读，D38）。"""
+        _validate_table_name(table)
+        self._live_catalog().get(table)  # 表不存在 → E_TABLE_NOT_FOUND
+        return self._stats_provider(table).snapshot()

@@ -288,6 +288,72 @@ class TableEngine:
         self._columns = tuple(columns)
         self._pool = pool
         self._rid_to_page: dict[RowId, int] = {}
+        # V3 统计（D37）：惰性建立一次基线，之后增量维护，
+        # 避免 statistics 每次调用都退化成全表扫描。
+        self._row_count: int | None = None
+        self._data_pages: set[int] | None = None
+
+    # ---- 内部：统计计数（D37） ----
+
+    def _ensure_layout(self) -> tuple[int, set[int]]:
+        """惰性建立（行数，活动数据页集合）基线：一次**只读**遍历。
+
+        页 0、空闲页与溢出链页都不计入数据页；`_active_page_numbers()`
+        已经做了这三类过滤。基线只在首次访问时建立。
+        """
+        if self._row_count is None or self._data_pages is None:
+            row_count = 0
+            data_pages: set[int] = set()
+            for page_no in self._active_page_numbers():
+                page = read_page(self._pool, self._path, page_no)
+                row_count += len(_page_slot_entries(page))
+                data_pages.add(page_no)
+            self._row_count = row_count
+            self._data_pages = data_pages
+        return self._row_count, self._data_pages
+
+    def row_count(self) -> int:
+        """本表当前行数（O(1)：基线 + 增量维护）。"""
+        return self._ensure_layout()[0]
+
+    def data_page_count(self) -> int:
+        """活动数据页数量：不含页 0、空闲页与溢出链页（契约 DV3-09）。"""
+        return len(self._ensure_layout()[1])
+
+    def data_pages(self) -> list[int]:
+        """活动数据页号（升序），供统计采样使用。"""
+        return sorted(self._ensure_layout()[1])
+
+    def sample_rows(self, max_pages: int) -> Iterator[Row]:
+        """按页序产出前 `max_pages` 个活动数据页上的行（统计采样；只读）。
+
+        采样是**有界近似**（D37/D41）：只读这些页，不写盘、不遍历全表。
+        """
+        for page_no in self.data_pages()[:max_pages]:
+            page = read_page(self._pool, self._path, page_no)
+            for record_offset, record_length, is_overflow in _page_slot_entries(
+                page
+            ):
+                if is_overflow:
+                    anchor = bytes(
+                        page[record_offset : record_offset + record_length]
+                    )
+                    _anchor_rid, first_page, total_len = self._parse_anchor(anchor)
+                    record = self._read_overflow_record(first_page, total_len)
+                else:
+                    record = bytes(
+                        page[record_offset : record_offset + record_length]
+                    )
+                yield decode_record(record, self._columns)
+
+    def _note_allocated_data_page(self, page_no: int) -> None:
+        """数据页落点：基线已建立才维护，未建立时下次访问会整体重算。"""
+        if self._data_pages is not None:
+            self._data_pages.add(page_no)
+
+    def _note_freed_data_page(self, page_no: int) -> None:
+        if self._data_pages is not None:
+            self._data_pages.discard(page_no)
 
     # ---- 内部：row_id / 页定位 ----
 
@@ -343,6 +409,7 @@ class TableEngine:
         """整页有行 → 写回；重建后整页空 → 还进空闲页链表（D05/D15）。"""
         slot_count, _flags, _free_ptr = _parse_page_header(page)
         if slot_count == 0:
+            self._note_freed_data_page(page_no)
             free_page(self._pool, self._path, page_no)
         else:
             write_page(self._pool, self._path, page_no, page)
@@ -474,6 +541,7 @@ class TableEngine:
                 page_no, page = located
             else:
                 page_no = alloc_page(self._pool, self._path)
+                self._note_allocated_data_page(page_no)
                 page = new_data_page()
             if not append_record(page, record):
                 raise SqlError(E_STORAGE, "internal: inline placement should fit")
@@ -487,6 +555,7 @@ class TableEngine:
             page_no, page = located
         else:
             page_no = alloc_page(self._pool, self._path)
+            self._note_allocated_data_page(page_no)
             page = new_data_page()
         if not append_overflow_anchor(page, anchor):
             raise SqlError(E_STORAGE, "internal: anchor placement should fit")
@@ -503,6 +572,8 @@ class TableEngine:
         self._check_record_size(record)
         page_no = self._place_record(row_id, record)
         self._rid_to_page[row_id] = page_no
+        if self._row_count is not None:
+            self._row_count += 1
         return row_id
 
     @trace_storage_operation("engine", "scan")
@@ -609,3 +680,5 @@ class TableEngine:
             for chain_page in old_chain:
                 free_page(self._pool, self._path, chain_page)
         self._rid_to_page.pop(row_id, None)
+        if self._row_count is not None:
+            self._row_count -= 1

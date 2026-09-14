@@ -197,10 +197,11 @@ def test_table_methods_reject_invalid_names(storage, method_name):
         "list_indexes",
         "index_lookup",
         "index_range",
+        "statistics",
     ],
 )
 def test_index_methods_join_the_public_matrix(storage, method_name):
-    """V3：公开方法由 13 个扩到 18 个，五个索引方法必须都在。
+    """V3：公开方法由 13 个扩到 19 个，五个索引方法与 statistics 必须都在。
 
     断言的改动：方法名拼错、只在契约里声明而未在 Storage 上实现。
     """
