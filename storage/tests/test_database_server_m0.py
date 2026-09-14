@@ -1,6 +1,6 @@
 """DatabaseServer 库级测试（V2 页式 Catalog）：目录工件、main 保护、错误边界。
 
-V2 起新库只创建 sys_tables.db / sys_columns.db，不再创建 catalog.json。
+V3 起新库创建 sys_tables.db / sys_columns.db / sys_indexes.db，不再创建 catalog.json。
 重启 = 在同一个 data_dir 上新建 DatabaseServer。
 """
 

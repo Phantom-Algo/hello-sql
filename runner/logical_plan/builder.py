@@ -1,3 +1,11 @@
+"""AST 到绑定逻辑计划的构建器。
+
+本模块承担 C 中两个连续但可分开观察的职责：先通过 Catalog
+解析表、列、限定符和表达式类型，再生成不可变的 LogicalPlan 树。
+内部绑定动作发送 ``binding`` 事件，最外层 ``build`` 发送
+``logical_plan`` 事件；没有注入回调时原有行为完全不变。
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -47,6 +55,7 @@ from runner.logical_plan.plans import (
     LogicalUpdate,
     LogicalUseDatabase,
 )
+from runner.trace_hooks import RunnerTraceSink, trace_runner_operation
 
 
 DescribeTable = Callable[[str], TableInfo]
@@ -55,11 +64,24 @@ DescribeTable = Callable[[str], TableInfo]
 class LogicalPlanBuilder:
     """把契约 AST 转换为完成名称与类型绑定的 LogicalPlan。"""
 
-    def __init__(self, describe_table: DescribeTable) -> None:
-        self._describe_table = describe_table
+    def __init__(
+        self,
+        describe_table: DescribeTable,
+        trace_sink: RunnerTraceSink | None = None,
+    ) -> None:
+        """保存动态 Schema 查询函数和可选 C 追踪回调。
 
+        Args:
+            describe_table: 按物理表名返回当前数据库 TableInfo 的函数。
+            trace_sink: 可选字典事件回调；为 None 时不生成追踪。
+        """
+
+        self._describe_table = describe_table
+        self._trace_sink = trace_sink
+
+    @trace_runner_operation("logical_plan", "build_plan")
     def build(self, statement: Statement) -> LogicalPlan:
-        """为一条 Statement 构建计划树根节点。"""
+        """把一条 AST Statement 分派为完成绑定的逻辑计划树根。"""
         match statement:
             case CreateDatabaseStmt():
                 return LogicalCreateDatabase(name=statement.name)
@@ -85,6 +107,7 @@ class LogicalPlanBuilder:
             case _:
                 assert_never(statement)
 
+    @trace_runner_operation("binding", "bind_source")
     def _build_source(self, ref: TableRef) -> tuple[LogicalSchema, LogicalScan]:
         """描述一张表，返回（完成绑定的 Schema, Scan 叶子）。
 
@@ -107,6 +130,7 @@ class LogicalPlanBuilder:
         )
         return schema, LogicalScan(table=ref.name, schema=schema, alias=ref.alias)
 
+    @trace_runner_operation("binding", "bind_source_range")
     def _build_source_range(self, statement: SelectStmt) -> LogicalPlan:
         """把 FROM 表与各 JOIN 按书写顺序构造成左深树。
 
@@ -134,8 +158,9 @@ class LogicalPlanBuilder:
             )
         return plan
 
-    @staticmethod
+    @trace_runner_operation("binding", "bind_filter")
     def _build_filter(
+        self,
         child: LogicalPlan,
         where: Expr | None,
     ) -> LogicalPlan:
@@ -151,8 +176,9 @@ class LogicalPlanBuilder:
             child=child,
         )
 
-    @staticmethod
+    @trace_runner_operation("binding", "bind_projection")
     def _bind_projection(
+        self,
         columns: tuple[Column, ...] | None,
         input_schema: LogicalSchema,
         *,
@@ -185,11 +211,18 @@ class LogicalPlanBuilder:
             )
         return tuple(refs), tuple(names)
 
-    @staticmethod
+    @trace_runner_operation("binding", "bind_assignments")
     def _bind_assignments(
+        self,
         assignments: tuple[Assignment, ...],
         schema: LogicalSchema,
     ) -> tuple[BoundAssignment, ...]:
+        """合并 UPDATE 重复赋值，解析目标列并按列序输出类型化赋值。
+
+        同一列多次出现时保留最后一个值；排序后 Executor 可以稳定地
+        按行元组位置更新，不需要再次做名称查找。
+        """
+
         latest_values = {
             assignment.column: assignment.value for assignment in assignments
         }
@@ -207,7 +240,10 @@ class LogicalPlanBuilder:
             for column, value in resolved
         )
 
+    @trace_runner_operation("binding", "bind_insert")
     def _build_insert(self, statement: InsertStmt) -> LogicalInsert:
+        """绑定 INSERT 目标 Schema，校验值数量并按目标列类型规范化。"""
+
         schema, _ = self._build_source(TableRef(statement.table))
         if len(statement.values) != len(schema.columns):
             raise SqlError(
@@ -226,7 +262,10 @@ class LogicalPlanBuilder:
             values=values,
         )
 
+    @trace_runner_operation("binding", "bind_select")
     def _build_select(self, statement: SelectStmt) -> LogicalProjection:
+        """按 FROM/JOIN、WHERE、Projection 顺序完成 SELECT 名称与类型绑定。"""
+
         child = self._build_filter(
             self._build_source_range(statement),
             statement.where,
@@ -242,7 +281,10 @@ class LogicalPlanBuilder:
             child=child,
         )
 
+    @trace_runner_operation("binding", "bind_update")
     def _build_update(self, statement: UpdateStmt) -> LogicalUpdate:
+        """绑定 UPDATE 的表、过滤谓词和最终生效的赋值列表。"""
+
         schema, scan = self._build_source(TableRef(statement.table))
         child = self._build_filter(scan, statement.where)
         assignments = self._bind_assignments(statement.assignments, schema)
@@ -252,7 +294,10 @@ class LogicalPlanBuilder:
             child=child,
         )
 
+    @trace_runner_operation("binding", "bind_delete")
     def _build_delete(self, statement: DeleteStmt) -> LogicalDelete:
+        """绑定 DELETE 的目标表和可选 WHERE，生成可复用的行计划子树。"""
+
         _, scan = self._build_source(TableRef(statement.table))
         child = self._build_filter(scan, statement.where)
         return LogicalDelete(table=statement.table, child=child)

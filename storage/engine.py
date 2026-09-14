@@ -23,6 +23,9 @@ row_id 不变量（D08）：
 OVERFLOW_PAYLOAD_SIZE 切片存在 OVFL 链页；删除/整行更新沿链回收。
 
 实现阶段：M2/M4/M5 已完成（行存取、空闲页回收、溢出页链与损坏矩阵）。
+
+追踪：TableEngine 的 CRUD、行定位、落盘和溢出页链都提交嵌套事件；
+惰性 scan 在实际迭代完成、失败或提前关闭时才结束记录。
 """
 
 from __future__ import annotations
@@ -31,15 +34,12 @@ import struct
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from contracts.ast import ColumnDef, SqlType, Value
+from contracts.ast import ColumnDef, Value
 from contracts.errors import E_ROW_NOT_FOUND, E_STORAGE, SqlError
 from contracts.storage import Row, RowId
 
 from storage.cache import BufferPool
 from storage.constants import (
-    BOOL_FALSE_BYTE,
-    BOOL_SIZE,
-    BOOL_TRUE_BYTE,
     INLINE_RECORD_LIMIT,
     MAX_ROW_BYTES,
     OVERFLOW_ANCHOR_FIRST_PAGE_OFFSET,
@@ -73,13 +73,12 @@ from storage.pager import (
     read_page,
     write_page,
 )
+from storage.trace_hooks import trace_storage_operation
+from storage.valuecodec import decode_value, encode_value
 
 
 # 记录编码格式（§8.1）：u64 row_id；INT=q；REAL=d；TEXT=u32 长度 + UTF-8。
 _RID = struct.Struct("<Q")
-_INT = struct.Struct("<q")
-_REAL = struct.Struct("<d")
-_TEXT_LEN = struct.Struct("<I")
 _PAGE_HEADER = struct.Struct("<HHI")   # u16 slot_count + u16 flags + u32 free_ptr
 _SLOT = struct.Struct("<II")           # u32 record_offset + u32 record_length
 _OVERFLOW_ANCHOR = struct.Struct("<QII")   # row_id + first_chain_page + total_len
@@ -96,18 +95,7 @@ def encode_record(
     """
     parts = [_RID.pack(row_id)]
     for column, value in zip(columns, values):
-        if column.type is SqlType.INT:
-            parts.append(_INT.pack(value))
-        elif column.type is SqlType.REAL:
-            parts.append(_REAL.pack(value))
-        elif column.type is SqlType.BOOLEAN:
-            parts.append(
-                bytes((BOOL_TRUE_BYTE if value else BOOL_FALSE_BYTE,))
-            )
-        else:  # SqlType.TEXT
-            raw = value.encode("utf-8")
-            parts.append(_TEXT_LEN.pack(len(raw)))
-            parts.append(raw)
+        parts.append(encode_value(column, value))
     return b"".join(parts)
 
 
@@ -122,36 +110,9 @@ def decode_record(record: bytes, columns: Sequence[ColumnDef]) -> Row:
         raise SqlError(E_STORAGE, "corrupt record: missing row_id") from exc
     pos = _RID.size
     values: list[Value] = []
-    try:
-        for column in columns:
-            if column.type is SqlType.INT:
-                (value,) = _INT.unpack_from(record, pos)
-                pos += _INT.size
-            elif column.type is SqlType.REAL:
-                (value,) = _REAL.unpack_from(record, pos)
-                pos += _REAL.size
-            elif column.type is SqlType.BOOLEAN:
-                raw = record[pos : pos + BOOL_SIZE]
-                if len(raw) < BOOL_SIZE:
-                    raise SqlError(E_STORAGE, "corrupt record: truncated boolean")
-                raw_byte = raw[0]
-                pos += BOOL_SIZE
-                if raw_byte not in (BOOL_FALSE_BYTE, BOOL_TRUE_BYTE):
-                    raise SqlError(E_STORAGE, "corrupt boolean value")
-                value = raw_byte == BOOL_TRUE_BYTE
-            else:  # SqlType.TEXT
-                (length,) = _TEXT_LEN.unpack_from(record, pos)
-                pos += _TEXT_LEN.size
-                raw = record[pos : pos + length]
-                if len(raw) < length:
-                    raise SqlError(E_STORAGE, "corrupt record: truncated text")
-                value = raw.decode("utf-8")
-                pos += length
-            values.append(value)
-    except struct.error as exc:
-        raise SqlError(E_STORAGE, "corrupt record: unexpected end") from exc
-    except UnicodeDecodeError as exc:
-        raise SqlError(E_STORAGE, "corrupt record: invalid utf-8 text") from exc
+    for column in columns:
+        value, pos = decode_value(column, record, pos)
+        values.append(value)
     if pos != len(record):
         raise SqlError(E_STORAGE, "corrupt record: trailing bytes")
     return (row_id, tuple(values))
@@ -327,6 +288,72 @@ class TableEngine:
         self._columns = tuple(columns)
         self._pool = pool
         self._rid_to_page: dict[RowId, int] = {}
+        # V3 统计（D37）：惰性建立一次基线，之后增量维护，
+        # 避免 statistics 每次调用都退化成全表扫描。
+        self._row_count: int | None = None
+        self._data_pages: set[int] | None = None
+
+    # ---- 内部：统计计数（D37） ----
+
+    def _ensure_layout(self) -> tuple[int, set[int]]:
+        """惰性建立（行数，活动数据页集合）基线：一次**只读**遍历。
+
+        页 0、空闲页与溢出链页都不计入数据页；`_active_page_numbers()`
+        已经做了这三类过滤。基线只在首次访问时建立。
+        """
+        if self._row_count is None or self._data_pages is None:
+            row_count = 0
+            data_pages: set[int] = set()
+            for page_no in self._active_page_numbers():
+                page = read_page(self._pool, self._path, page_no)
+                row_count += len(_page_slot_entries(page))
+                data_pages.add(page_no)
+            self._row_count = row_count
+            self._data_pages = data_pages
+        return self._row_count, self._data_pages
+
+    def row_count(self) -> int:
+        """本表当前行数（O(1)：基线 + 增量维护）。"""
+        return self._ensure_layout()[0]
+
+    def data_page_count(self) -> int:
+        """活动数据页数量：不含页 0、空闲页与溢出链页（契约 DV3-09）。"""
+        return len(self._ensure_layout()[1])
+
+    def data_pages(self) -> list[int]:
+        """活动数据页号（升序），供统计采样使用。"""
+        return sorted(self._ensure_layout()[1])
+
+    def sample_rows(self, max_pages: int) -> Iterator[Row]:
+        """按页序产出前 `max_pages` 个活动数据页上的行（统计采样；只读）。
+
+        采样是**有界近似**（D37/D41）：只读这些页，不写盘、不遍历全表。
+        """
+        for page_no in self.data_pages()[:max_pages]:
+            page = read_page(self._pool, self._path, page_no)
+            for record_offset, record_length, is_overflow in _page_slot_entries(
+                page
+            ):
+                if is_overflow:
+                    anchor = bytes(
+                        page[record_offset : record_offset + record_length]
+                    )
+                    _anchor_rid, first_page, total_len = self._parse_anchor(anchor)
+                    record = self._read_overflow_record(first_page, total_len)
+                else:
+                    record = bytes(
+                        page[record_offset : record_offset + record_length]
+                    )
+                yield decode_record(record, self._columns)
+
+    def _note_allocated_data_page(self, page_no: int) -> None:
+        """数据页落点：基线已建立才维护，未建立时下次访问会整体重算。"""
+        if self._data_pages is not None:
+            self._data_pages.add(page_no)
+
+    def _note_freed_data_page(self, page_no: int) -> None:
+        if self._data_pages is not None:
+            self._data_pages.discard(page_no)
 
     # ---- 内部：row_id / 页定位 ----
 
@@ -338,6 +365,7 @@ class TableEngine:
                 f"row too large ({len(record)}B > MAX_ROW_BYTES {MAX_ROW_BYTES}B)",
             )
 
+    @trace_storage_operation("engine", "take_next_row_id")
     def _take_next_row_id(self) -> RowId:
         """取页 0 计数器并把 next_row_id+1 写回（D08：单调、持久化）。"""
         page0 = read_page(self._pool, self._path, 0)
@@ -347,6 +375,7 @@ class TableEngine:
         write_page(self._pool, self._path, 0, updated)
         return next_row_id
 
+    @trace_storage_operation("engine", "find_page_for_record")
     def _find_page_for(self, record_length: int) -> tuple[int, bytearray] | None:
         """在现有数据页里找能放下新记录的一页；没有返回 None。
 
@@ -360,6 +389,7 @@ class TableEngine:
                 return page_no, page
         return None
 
+    @trace_storage_operation("engine", "active_page_numbers")
     def _active_page_numbers(self) -> list[int]:
         """活动“数据页”页号：非 free list、且非溢出链页（M5 起含 OVFL 识别）。"""
         free = set(free_pages(self._pool, self._path))
@@ -374,10 +404,12 @@ class TableEngine:
             data_pages.append(page_no)
         return data_pages
 
+    @trace_storage_operation("engine", "write_or_free_page")
     def _write_or_free_page(self, page_no: int, page: bytearray) -> None:
         """整页有行 → 写回；重建后整页空 → 还进空闲页链表（D05/D15）。"""
         slot_count, _flags, _free_ptr = _parse_page_header(page)
         if slot_count == 0:
+            self._note_freed_data_page(page_no)
             free_page(self._pool, self._path, page_no)
         else:
             write_page(self._pool, self._path, page_no, page)
@@ -396,6 +428,7 @@ class TableEngine:
                 return i
         return None
 
+    @trace_storage_operation("engine", "locate_row")
     def _locate(self, row_id: RowId) -> tuple[int, bytearray, int]:
         """定位 (页号, 页内容副本, 槽号)；找不到 → E_ROW_NOT_FOUND。
 
@@ -431,6 +464,7 @@ class TableEngine:
             raise SqlError(E_STORAGE, "corrupt overflow anchor: invalid fields")
         return row_id, first_page, total_len
 
+    @trace_storage_operation("engine", "alloc_overflow_chain")
     def _alloc_overflow_chain(self, record: bytes) -> int:
         """把整条编码记录切片写入一串溢出页，返回链首页号。
 
@@ -456,6 +490,7 @@ class TableEngine:
             write_page(self._pool, self._path, page_no, page)
         return page_numbers[0]
 
+    @trace_storage_operation("engine", "collect_overflow_chain")
     def _collect_overflow_chain(self, first_page: int, total_len: int) -> list[int]:
         """沿链校验并收集页号；自环/next 缺失/magic 错/total 不符 → E_STORAGE。"""
         collected: list[int] = []
@@ -476,6 +511,7 @@ class TableEngine:
             raise SqlError(E_STORAGE, "corrupt overflow chain: too short")
         return collected
 
+    @trace_storage_operation("engine", "read_overflow_record")
     def _read_overflow_record(self, first_page: int, total_len: int) -> bytes:
         """沿链收齐 payload 拼回完整编码记录。"""
         chunks: list[bytes] = []
@@ -490,11 +526,13 @@ class TableEngine:
             )
         return b"".join(chunks)
 
+    @trace_storage_operation("engine", "free_overflow_chain")
     def _free_overflow_chain(self, first_page: int, total_len: int) -> None:
         """先整体校验链，再逐页 free_page（D14：删除/整行更新沿链回收）。"""
         for page_no in self._collect_overflow_chain(first_page, total_len):
             free_page(self._pool, self._path, page_no)
 
+    @trace_storage_operation("engine", "place_record")
     def _place_record(self, row_id: RowId, record: bytes) -> int:
         """落一行：inline 走普通槽；超长先建溢出链、再在数据页放锚点槽。"""
         if len(record) <= INLINE_RECORD_LIMIT:
@@ -503,6 +541,7 @@ class TableEngine:
                 page_no, page = located
             else:
                 page_no = alloc_page(self._pool, self._path)
+                self._note_allocated_data_page(page_no)
                 page = new_data_page()
             if not append_record(page, record):
                 raise SqlError(E_STORAGE, "internal: inline placement should fit")
@@ -516,6 +555,7 @@ class TableEngine:
             page_no, page = located
         else:
             page_no = alloc_page(self._pool, self._path)
+            self._note_allocated_data_page(page_no)
             page = new_data_page()
         if not append_overflow_anchor(page, anchor):
             raise SqlError(E_STORAGE, "internal: anchor placement should fit")
@@ -524,6 +564,7 @@ class TableEngine:
 
     # ---- 行级方法（供 Storage 门面调用）----
 
+    @trace_storage_operation("engine", "insert")
     def insert(self, values: Sequence[Value]) -> RowId:
         """分配新 row_id、落行并更新 rid→页 映射（§5.3）。"""
         row_id = self._take_next_row_id()
@@ -531,8 +572,11 @@ class TableEngine:
         self._check_record_size(record)
         page_no = self._place_record(row_id, record)
         self._rid_to_page[row_id] = page_no
+        if self._row_count is not None:
+            self._row_count += 1
         return row_id
 
+    @trace_storage_operation("engine", "scan")
     def scan(self) -> Iterator[Row]:
         """逐数据页解码（inline 直解，溢出行沿链拼回），顺带重建映射。"""
         seen_rids: set[RowId] = set()
@@ -563,6 +607,31 @@ class TableEngine:
                 self._rid_to_page[row[0]] = page_no
                 yield row
 
+    @trace_storage_operation("engine", "update")
+    def get_row(self, row_id: RowId) -> Row:
+        """按 row_id 取一整行（索引回表用）；找不到 → E_ROW_NOT_FOUND。
+
+        复用既有 `_locate` 的定位（含 rid→页 映射与退化全表找），
+        再按槽的溢出标志决定 inline 直解还是沿链拼回。
+        """
+        _page_no, page, slot_index = self._locate(row_id)
+        record_offset, record_length, is_overflow = _page_slot_entries(page)[
+            slot_index
+        ]
+        if not is_overflow:
+            record = bytes(page[record_offset : record_offset + record_length])
+            return decode_record(record, self._columns)
+        anchor = bytes(page[record_offset : record_offset + record_length])
+        anchor_rid, first_page, total_len = self._parse_anchor(anchor)
+        record = self._read_overflow_record(first_page, total_len)
+        row = decode_record(record, self._columns)
+        if row[0] != anchor_rid:
+            raise SqlError(
+                E_STORAGE, "corrupt overflow row: anchor row_id mismatch"
+            )
+        return row
+
+    @trace_storage_operation("engine", "update")
     def update(self, row_id: RowId, values: Sequence[Value]) -> None:
         """整行替换：删旧行（溢出时沿链回收）→ 按新长度 inline/溢出新落。
 
@@ -591,6 +660,7 @@ class TableEngine:
         new_page_no = self._place_record(row_id, record)
         self._rid_to_page[row_id] = new_page_no
 
+    @trace_storage_operation("engine", "delete")
     def delete(self, row_id: RowId) -> None:
         """删除一行：溢出时先校验并回收整条链，再删槽紧凑（D14/D15/D05）。"""
         page_no, page, slot_index = self._locate(row_id)
@@ -610,3 +680,5 @@ class TableEngine:
             for chain_page in old_chain:
                 free_page(self._pool, self._path, chain_page)
         self._rid_to_page.pop(row_id, None)
+        if self._row_count is not None:
+            self._row_count -= 1

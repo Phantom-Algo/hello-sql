@@ -86,13 +86,20 @@ hello-sql --data-dir /absolute/path/to/hello-sql/data --database shop
 | `/help` | 查看帮助 |
 | `/databases`、`/tables` | 查看数据库 / 当前库的表 |
 | `/describe users` | 查看列名和类型 |
+| `/inspect [ALL\|A\|B\|C]` | 查看最近 SQL 的全链路或指定负责模块 |
 | `USE shop;` | 切换库，输入提示符同步更新 |
 | `/clear` | 清屏 |
 | `/quit`、`quit`、`exit`、Ctrl+D | 退出（Ctrl+D 在空输入时） |
 | Tab、↑↓ | 补全支持的关键字/库名/表名、浏览历史 |
 | Ctrl+C | 清空尚未提交的输入 |
 
-一次输入一条 SQL，末尾分号可省略；本版不提供多行编辑或一次执行多条语句。
+执行 SQL 后输入 `/inspect`，交互模式会打开本地浏览器窗口，
+默认查看 A+B+C 完整流程；
+`/inspect A`、`/inspect B` 和 `/inspect C` 可以切换负责模块。
+查看操作只读取最近追踪快照，不会重新执行 SQL。
+
+一个输入缓冲区可包含多行和多条 SQL；Enter 执行，Alt+Enter 插入换行。
+末尾分号可省略。
 Ctrl+C 不是事务回滚命令。历史存于所选数据目录中的 `.hello_sql_history`，
 `--no-history` 可禁用磁盘历史。历史文件无法写入时降级为内存历史。
 

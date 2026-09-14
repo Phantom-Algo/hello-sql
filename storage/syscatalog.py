@@ -1,6 +1,9 @@
-"""页式系统表自举模块（V2 D20/D21；M1 只做自举，M2 才接入 Catalog 权威）。
+"""页式系统表自举模块（V2 D20/D21；V3 D30 增加索引表）。
 
 本模块只依赖 pager / engine / cache 这些既有基础设施，不反向依赖门面。
+
+V3 起每库有三张内置系统表：__sys_tables / __sys_columns / __sys_indexes。
+三张都是**普通表文件**（magic HSQL），不是索引文件（HSIX）。
 """
 
 from __future__ import annotations
@@ -11,7 +14,11 @@ from pathlib import Path
 from contracts.ast import ColumnDef, SqlType
 
 from storage.cache import BufferPool
-from storage.constants import SYS_COLUMNS_FILE_NAME, SYS_TABLES_FILE_NAME
+from storage.constants import (
+    SYS_COLUMNS_FILE_NAME,
+    SYS_INDEXES_FILE_NAME,
+    SYS_TABLES_FILE_NAME,
+)
 from storage.engine import TableEngine
 from storage.pager import create_table_file
 
@@ -30,31 +37,62 @@ SYS_COLUMNS_COLUMNS: tuple[ColumnDef, ...] = (
     ColumnDef("column_type", SqlType.TEXT),
 )
 
+# V3 D30：索引元数据。file_name 恒为 f"{index_name}.idx"，加载时校验；
+# 不存 ordinal 而存列名：列名在表内唯一，且加载时用 __sys_columns 校验存在性。
+SYS_INDEXES_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("index_name", SqlType.TEXT),
+    ColumnDef("table_id", SqlType.INT),
+    ColumnDef("column_name", SqlType.TEXT),
+    ColumnDef("file_name", SqlType.TEXT),
+)
+
+
+@dataclass(frozen=True)
+class SystemTablePaths:
+    """三张系统表的文件路径。
+
+    用具名 dataclass 而非三元组：三个元素同类型，位置解包极易写反。
+    """
+
+    tables: Path
+    columns: Path
+    indexes: Path
+
+    def all(self) -> tuple[Path, Path, Path]:
+        """按固定顺序返回全部路径，供批量创建/清理使用。"""
+        return self.tables, self.columns, self.indexes
+
 
 @dataclass(frozen=True)
 class SystemTables:
-    """两张系统表的行级访问器：tables 对应 __sys_tables，columns 对应 __sys_columns。"""
+    """三张系统表的行级访问器（V3 D30 增加 indexes）。"""
 
     tables: TableEngine
     columns: TableEngine
+    indexes: TableEngine
 
 
-def system_table_paths(db_dir: str | Path) -> tuple[Path, Path]:
-    """返回 (__sys_tables 文件路径, __sys_columns 文件路径)。"""
+def system_table_paths(db_dir: str | Path) -> SystemTablePaths:
+    """返回三张系统表的文件路径。"""
     root = Path(db_dir)
-    return root / SYS_TABLES_FILE_NAME, root / SYS_COLUMNS_FILE_NAME
+    return SystemTablePaths(
+        tables=root / SYS_TABLES_FILE_NAME,
+        columns=root / SYS_COLUMNS_FILE_NAME,
+        indexes=root / SYS_INDEXES_FILE_NAME,
+    )
 
 
 def create_empty_system_catalog(db_dir: str | Path) -> None:
-    """在空库目录中创建两张页式系统表文件（各自只有页 0）。"""
-    for path in system_table_paths(db_dir):
+    """在空库目录中创建三张页式系统表文件（各自只有页 0）。"""
+    for path in system_table_paths(db_dir).all():
         create_table_file(path)
 
 
 def open_system_tables(db_dir: str | Path, pool: BufferPool) -> SystemTables:
-    """按内置 Schema 打开两张系统表，返回可扫描的表引擎集合。"""
-    tables_path, columns_path = system_table_paths(db_dir)
+    """按内置 Schema 打开三张系统表，返回可扫描的表引擎集合。"""
+    paths = system_table_paths(db_dir)
     return SystemTables(
-        tables=TableEngine(tables_path, SYS_TABLES_COLUMNS, pool),
-        columns=TableEngine(columns_path, SYS_COLUMNS_COLUMNS, pool),
+        tables=TableEngine(paths.tables, SYS_TABLES_COLUMNS, pool),
+        columns=TableEngine(paths.columns, SYS_COLUMNS_COLUMNS, pool),
+        indexes=TableEngine(paths.indexes, SYS_INDEXES_COLUMNS, pool),
     )

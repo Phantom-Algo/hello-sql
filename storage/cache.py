@@ -13,6 +13,9 @@
 - 统计：hits / misses / evictions / dirty_writes 只增不减（D18）。
 
 实现阶段：M3 已完成（M1/M2 过渡期直读文件；现在一切页 I/O 走本层）。
+
+追踪：有可选 sink 时，每次页访问都提交操作前后统计，UI 由差值
+判断本次 hit/miss、淘汰与脏页写回；sink 失败不得改变缓存语义。
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from pathlib import Path
 
 from contracts.errors import E_STORAGE, SqlError
 from storage.constants import DEFAULT_CACHE_CAPACITY, PAGE_SIZE
+from storage.trace_hooks import StorageTracePayload, StorageTraceSink, trace_storage_operation
 
 
 @dataclass
@@ -45,10 +49,20 @@ class BufferPool:
     计划内部结构：OrderedDict[key, Frame]（D10：只做 LRU，FIFO 预留策略位）。
     """
 
-    def __init__(self, capacity: int = DEFAULT_CACHE_CAPACITY) -> None:
+    def __init__(
+        self,
+        capacity: int = DEFAULT_CACHE_CAPACITY,
+        trace_sink: StorageTraceSink | None = None,
+    ) -> None:
         """初始化容量、空帧表与统计（M0 只立状态，页操作 M3 实现）。
 
-        capacity 为 B 内部参数，不进任何公开签名（D16）。
+        ``capacity`` 是 B 的固定容量。``trace_sink`` 是可选的依赖倒置
+        回调；B 只向它提交普通记录，不导入或构造任何 UI 类型。
+        未提供时所有装饰器走快速直通路径。
+
+        Args:
+            capacity: 最多同时驻留的页帧数。
+            trace_sink: 可选同步追踪回调，通常由根装配层注入。
         """
         if capacity <= 0:
             raise ValueError("cache capacity must be positive")
@@ -58,6 +72,42 @@ class BufferPool:
         self._misses = 0
         self._evictions = 0
         self._dirty_writes = 0
+        self._trace_sink = trace_sink
+
+    def _trace_stats_snapshot(self) -> dict[str, int | float]:
+        """返回不经 ``stats`` 属性的内部统计快照。
+
+        追踪装饰器在每个操作前后调用本方法，用差值展示本次
+        调用导致的命中、缺页、淘汰和脏页写回。直接读字段可避免
+        统计快照自身再产生递归追踪。
+        """
+
+        accesses = self._hits + self._misses
+        return {
+            "capacity": self.capacity,
+            "hits": self._hits,
+            "misses": self._misses,
+            "evictions": self._evictions,
+            "dirty_writes": self._dirty_writes,
+            "hit_rate": (self._hits / accesses) if accesses else 0.0,
+            "resident_frames": len(self._frames),
+        }
+
+    def _emit_trace(self, payload: StorageTracePayload) -> None:
+        """向可选观察者提交记录，并隔离观察者的任何异常。
+
+        追踪属于诊断能力，不得因回调编程错误导致正常的页读写
+        失败或事务语义改变。因此本方法同步调用 sink，但会吞掉
+        sink 自身抛出的异常。
+        """
+
+        sink = self._trace_sink
+        if sink is None:
+            return
+        try:
+            sink(payload)
+        except Exception:
+            return
 
     # ---- 内部：key 规范化与磁盘 I/O ----
 
@@ -66,6 +116,7 @@ class BufferPool:
         """缓存 key = (绝对路径, 页号)；绝对化保证同一文件只有一个身份（D09）。"""
         return (Path(file_path).absolute(), page_no)
 
+    @trace_storage_operation("cache", "disk_read")
     def _read_disk(self, file_path: Path, page_no: int) -> bytearray:
         """按页偏移从磁盘读一整页；缺失/短读 → E_STORAGE。"""
         offset = page_no * PAGE_SIZE
@@ -82,6 +133,7 @@ class BufferPool:
             )
         return bytearray(data)
 
+    @trace_storage_operation("cache", "disk_write")
     def _write_disk(
         self, file_path: Path, page_no: int, data: bytes | bytearray
     ) -> None:
@@ -101,6 +153,7 @@ class BufferPool:
                 f"short write on page {page_no}: {file_path}",
             )
 
+    @trace_storage_operation("cache", "evict_lru")
     def _evict_lru(self) -> None:
         """容量已满时按 LRU 淘汰一个 pin==0 的帧；脏帧先写回（D11/D17）。"""
         victim_key = None
@@ -122,6 +175,7 @@ class BufferPool:
 
     # ---- 帧操作（D17）----
 
+    @trace_storage_operation("cache", "get_page")
     def get_page(self, file_path: Path, page_no: int) -> bytearray:
         """取页：命中直接返回；未命中读盘后返回。返回前已 pin（D17）。
 
@@ -141,6 +195,7 @@ class BufferPool:
         frame.pin += 1
         return frame.data
 
+    @trace_storage_operation("cache", "unpin_page")
     def unpin_page(self, file_path: Path, page_no: int) -> None:
         """放页：pin -= 1；归零后该帧恢复可淘汰状态（D17）。"""
         key = self._key(file_path, page_no)
@@ -151,6 +206,7 @@ class BufferPool:
             )
         frame.pin -= 1
 
+    @trace_storage_operation("cache", "mark_dirty")
     def mark_dirty(self, file_path: Path, page_no: int) -> None:
         """标脏：记录本帧与磁盘不一致（flush 时写回）。"""
         key = self._key(file_path, page_no)
@@ -160,6 +216,7 @@ class BufferPool:
         frame.dirty = True
         self._frames.move_to_end(key)
 
+    @trace_storage_operation("cache", "flush")
     def flush(self, file_path: Path | None = None) -> None:
         """把指定表文件（或全部）的脏帧写回磁盘；写回后置 clean（D11）。"""
         target_path = self._key(file_path, 0)[0] if file_path is not None else None
@@ -171,6 +228,7 @@ class BufferPool:
                 frame.dirty = False
                 self._dirty_writes += 1
 
+    @trace_storage_operation("cache", "discard")
     def discard(self, file_path: Path) -> None:
         """丢弃相关帧、不写回——删表/删库前调用（D11）。
 
@@ -186,6 +244,7 @@ class BufferPool:
         for key in drop_keys:
             del self._frames[key]
 
+    @trace_storage_operation("cache", "reset_stats")
     def reset_stats(self) -> None:
         """清零统计（仅供测试与报告，D18）。"""
         self._hits = 0
@@ -196,13 +255,6 @@ class BufferPool:
     @property
     def stats(self) -> dict[str, int | float]:
         """只读统计快照：capacity/hits/misses/evictions/dirty_writes/hit_rate。"""
-        accesses = self._hits + self._misses
-        hit_rate = (self._hits / accesses) if accesses else 0.0
-        return {
-            "capacity": self.capacity,
-            "hits": self._hits,
-            "misses": self._misses,
-            "evictions": self._evictions,
-            "dirty_writes": self._dirty_writes,
-            "hit_rate": hit_rate,
-        }
+        snapshot = self._trace_stats_snapshot()
+        snapshot.pop("resident_frames")
+        return snapshot

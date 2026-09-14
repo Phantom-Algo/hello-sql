@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from compiler import parse
 from contracts.ast import Cmp, Column, Literal, SelectStmt, TableRef
 from tests.A_tests.ast_tree_adapter import TreeNode, ast_to_tree
@@ -78,3 +80,43 @@ def test_ast_to_tree_displays_v2_select_fields_and_expression_nodes() -> None:
     assert "Or" in labels
     assert "Not" in labels
     assert "True" in labels
+
+
+# 两个参数确认旧版 Canvas 适配器也通过通用 dataclass 逻辑展示 V3 索引节点。
+@pytest.mark.parametrize(
+    ("sql", "root_label", "field_labels", "value_labels"),
+    [
+        (
+            "CREATE INDEX idx_users_id ON users (id);",
+            "CreateIndexStmt",
+            ["index_name", "table", "column"],
+            {"'idx_users_id'", "'users'", "'id'"},
+        ),
+        (
+            "DROP INDEX idx_users_id;",
+            "DropIndexStmt",
+            ["index_name"],
+            {"'idx_users_id'"},
+        ),
+    ],
+)
+def test_ast_to_tree_displays_v3_index_nodes(
+    sql: str,
+    root_label: str,
+    field_labels: list[str],
+    value_labels: set[str],
+) -> None:
+    """验证索引 AST 的根类型、字段分支和值叶子都进入可视化树。
+
+    Args:
+        sql: 用真实 Parser 生成索引 AST 的 SQL。
+        root_label: 可视化根节点应显示的 AST 类型名。
+        field_labels: 根节点下按 dataclass 定义顺序展示的字段名。
+        value_labels: 整棵树中必须出现的索引、表或列名称叶子。
+    """
+    tree = ast_to_tree(parse(sql))
+    labels = set(_collect_labels(tree))
+
+    assert tree.label == root_label
+    assert [child.label for child in tree.children] == field_labels
+    assert value_labels <= labels

@@ -18,6 +18,8 @@
 
 红线：本目录禁止 import compiler / runner；只允许 import contracts 与标准库。
 B 不认识 SQL / AST / 执行计划；C 不知道 B 的文件格式与内部结构。
+可观测性通过构造 `DatabaseServer` 时的可选 `trace_sink` 注入；
+回调只接收普通字典，B 仍然不反向导入 UI，也不会为追踪重放业务操作。
 
 错误归属（M0 边界）：
 - 公开方法第一道闸：库/表名格式校验 → E_BAD_ARG（D13，先于一切存在性检查）；
@@ -27,7 +29,6 @@ B 不认识 SQL / AST / 执行计划；C 不知道 B 的文件格式与内部结
 
 from __future__ import annotations
 
-import math
 import re
 import shutil
 from pathlib import Path
@@ -36,16 +37,19 @@ from typing import Iterator, Sequence
 from contracts.ast import ColumnDef, SqlType, Value
 from contracts.errors import (
     E_BAD_ARG,
+    E_COLUMN_NOT_FOUND,
     E_DATABASE_EXISTS,
     E_DATABASE_IN_USE,
     E_DATABASE_NOT_FOUND,
+    E_INDEX_EXISTS,
+    E_INDEX_NOT_FOUND,
     E_STORAGE,
     E_TABLE_EXISTS,
     E_TYPE_MISMATCH,
     E_VALUE_COUNT,
     SqlError,
 )
-from contracts.storage import Row, RowId, TableInfo
+from contracts.storage import IndexInfo, Row, RowId, TableInfo, TableStats
 
 from storage.cache import BufferPool
 from storage.catalog import Catalog
@@ -53,14 +57,21 @@ from storage.catalog_migration import load_or_migrate
 from storage.constants import (
     CATALOG_FILE_NAME,
     DEFAULT_CACHE_CAPACITY,
+    INDEX_DIR_NAME,
+    INDEX_FILE_SUFFIX,
     RESERVED_TABLE_PREFIX,
     SYS_COLUMNS_FILE_NAME,
+    SYS_INDEXES_FILE_NAME,
     SYS_TABLES_FILE_NAME,
     TABLE_FILE_SUFFIX,
 )
 from storage.engine import TableEngine
+from storage.index import IndexTree, create_index_file
 from storage.pager import create_table_file
 from storage.syscatalog import create_empty_system_catalog
+from storage.stats import TableStatsProvider
+from storage.trace_hooks import StorageTraceSink
+from storage.valuecodec import normalize_value
 
 
 _IDENTIFIER_RE = re.compile(r"[a-z_][a-z0-9_]*\Z")
@@ -77,6 +88,23 @@ def _validate_table_name(name: str) -> None:
     _validate_identifier(name)
     if name.startswith(RESERVED_TABLE_PREFIX):
         raise SqlError(E_BAD_ARG, f"reserved table name: {name}")
+
+
+def _validate_index_name(name: str) -> None:
+    """索引名边界：与表名同一套规则（含 __sys_ 前缀保留，E_BAD_ARG）。"""
+    _validate_identifier(name)
+    if name.startswith(RESERVED_TABLE_PREFIX):
+        raise SqlError(E_BAD_ARG, f"reserved index name: {name}")
+
+
+def _column_named(
+    columns: Sequence[ColumnDef], name: str
+) -> ColumnDef:
+    """按列名取列定义；不存在 → E_COLUMN_NOT_FOUND。"""
+    for column in columns:
+        if column.name == name:
+            return column
+    raise SqlError(E_COLUMN_NOT_FOUND, f"column not found: {name}")
 
 
 def _materialize_columns(columns: Sequence[ColumnDef]) -> tuple[ColumnDef, ...]:
@@ -112,74 +140,23 @@ def _validate_columns(columns: Sequence[ColumnDef]) -> None:
             )
 
 
-_INT64_MIN = -(2**63)
-_INT64_MAX = 2**63 - 1
-
-
 def _normalize_values(
     columns: Sequence[ColumnDef], values: Sequence[Value]
 ) -> tuple[Value, ...]:
     """公开方法的值边界检查（§3.2）：个数 → 类型 → REAL 归一化为 float。
 
     返回归一化后的值元组，供 engine 直接编码；校验失败抛契约错误码。
+    单值规则抽到 storage/valuecodec.normalize_value，索引键复用同一套，
+    避免"表一套、索引一套"两个校验实现。
     """
     if len(values) != len(columns):
         raise SqlError(
             E_VALUE_COUNT,
             f"expected {len(columns)} values, got {len(values)}",
         )
-    normalized: list[Value] = []
-    for column, value in zip(columns, values):
-        if column.type is SqlType.INT:
-            if isinstance(value, bool) or type(value) is not int:
-                raise SqlError(E_TYPE_MISMATCH, f"INT column {column.name!r} got {value!r}")
-            if not _INT64_MIN <= value <= _INT64_MAX:
-                raise SqlError(
-                    E_TYPE_MISMATCH,
-                    f"INT column {column.name!r} out of 64-bit range",
-                )
-            normalized.append(value)
-        elif column.type is SqlType.REAL:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise SqlError(
-                    E_TYPE_MISMATCH, f"REAL column {column.name!r} got {value!r}"
-                )
-            try:
-                real_value = float(value)
-            except OverflowError:
-                # 巨 int（如 2**1024）转 double 会抛 OverflowError；
-                # 表示不了的数值按范围不符拒绝，不许把裸异常漏给调用方。
-                raise SqlError(
-                    E_TYPE_MISMATCH,
-                    f"REAL column {column.name!r} out of double range",
-                ) from None
-            if not math.isfinite(real_value):
-                raise SqlError(
-                    E_TYPE_MISMATCH,
-                    f"REAL column {column.name!r} must be finite, got {value!r}",
-                )
-            normalized.append(real_value)
-        elif column.type is SqlType.BOOLEAN:
-            if type(value) is not bool:
-                raise SqlError(
-                    E_TYPE_MISMATCH,
-                    f"BOOLEAN column {column.name!r} got {value!r}",
-                )
-            normalized.append(value)
-        else:  # SqlType.TEXT
-            if type(value) is not str:
-                raise SqlError(
-                    E_TYPE_MISMATCH, f"TEXT column {column.name!r} got {value!r}"
-                )
-            try:
-                value.encode("utf-8")
-            except UnicodeEncodeError:
-                raise SqlError(
-                    E_TYPE_MISMATCH,
-                    f"TEXT column {column.name!r} is not utf-8 encodable",
-                ) from None
-            normalized.append(value)
-    return tuple(normalized)
+    return tuple(
+        normalize_value(column, value) for column, value in zip(columns, values)
+    )
 
 
 class DatabaseServer:
@@ -195,8 +172,22 @@ class DatabaseServer:
     - 同一 DatabaseServer 的所有 Storage 共享 BufferPool（D09/D16）。
     """
 
-    def __init__(self, data_dir: str | Path) -> None:
-        """建 data_dir → BufferPool(64) → 确保 main（目录 + catalog）。"""
+    def __init__(
+        self,
+        data_dir: str | Path,
+        trace_sink: StorageTraceSink | None = None,
+    ) -> None:
+        """创建数据目录、共享 BufferPool 与默认 main 数据库。
+
+        Args:
+            data_dir: 所有数据库目录的根路径。
+            trace_sink: 可选 B 内部调用追踪回调。它被注入进共享
+                BufferPool，Catalog、Cache、Pager 与 Engine 均通过该池
+                发布记录，存储层本身不导入 UI。
+
+        Raises:
+            SqlError: 数据目录或 main 数据库无法创建或校验时抛出。
+        """
         self._data_dir = Path(data_dir)
         try:
             self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -204,9 +195,11 @@ class DatabaseServer:
             raise SqlError(
                 E_STORAGE, f"cannot create data dir: {self._data_dir}"
             ) from exc
-        self._pool = BufferPool(DEFAULT_CACHE_CAPACITY)
+        self._pool = BufferPool(DEFAULT_CACHE_CAPACITY, trace_sink=trace_sink)
         self._catalogs: dict[Path, Catalog] = {}  # 库目录(绝对) → Catalog
         self._engines: dict[tuple[Path, str], TableEngine] = {}  # (库,表) → engine
+        self._index_trees: dict[tuple[Path, str], IndexTree] = {}  # (库,索引) → 树
+        self._stats: dict[tuple[Path, str], TableStatsProvider] = {}  # (库,表) → 统计
 
         main_dir = self._data_dir / "main"
         if main_dir.exists():
@@ -241,16 +234,19 @@ class DatabaseServer:
     # ---- 内部辅助 ----
 
     def _db_path(self, name: str) -> Path:
+        """把已通过边界校验的数据库名映射为根目录下的路径。"""
+
         return self._data_dir / name
 
     @staticmethod
     def _has_catalog_artifacts(db_dir: Path) -> bool:
-        """目录工件：两张系统表文件任一，或 V1 catalog.json。"""
+        """目录工件：三张系统表文件任一，或 V1 catalog.json。"""
         return any(
             (db_dir / file_name).is_file()
             for file_name in (
                 SYS_TABLES_FILE_NAME,
                 SYS_COLUMNS_FILE_NAME,
+                SYS_INDEXES_FILE_NAME,
                 CATALOG_FILE_NAME,
             )
         )
@@ -276,6 +272,12 @@ class DatabaseServer:
         stale_engines = [key for key in self._engines if key[0] == db_key]
         for key in stale_engines:
             del self._engines[key]
+        stale_trees = [key for key in self._index_trees if key[0] == db_key]
+        for key in stale_trees:
+            del self._index_trees[key]
+        stale_stats = [key for key in self._stats if key[0] == db_key]
+        for key in stale_stats:
+            del self._stats[key]
 
     # ---- 库级公开方法 ----
 
@@ -401,6 +403,8 @@ class Storage:
         return current
 
     def _table_file_path(self, name: str) -> Path:
+        """把已规范化的表名映射为当前数据库的物理表文件路径。"""
+
         return self._db_path / f"{name}{TABLE_FILE_SUFFIX}"
 
     def _engine_for(self, name: str, columns: Sequence[ColumnDef]) -> TableEngine:
@@ -446,6 +450,21 @@ class Storage:
         columns = catalog.get(name)  # 缺表 → E_TABLE_NOT_FOUND
         table_path = self._table_file_path(name)
         engine_key = (self._db_path, name)
+        # 先级联清理该表的索引（登记行 + 文件 + 缓存），再摘表登记；
+        # 否则会留下引用已消失 table_id 的索引行，启动校验直接 E_STORAGE。
+        for info in catalog.indexes_for_table(name):
+            index_path = self._index_file_path(info.name)
+            catalog.unregister_index(info.name)
+            self._pool.discard(index_path)
+            self._server._index_trees.pop((self._db_path, info.name), None)
+            try:
+                index_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise SqlError(
+                    E_STORAGE, f"cannot delete index file: {index_path}"
+                ) from exc
         catalog.unregister(name)
         self._pool.discard(table_path)  # 删文件前丢帧（D11）
         try:
@@ -462,6 +481,7 @@ class Storage:
                 E_STORAGE, f"cannot delete table file: {table_path}"
             ) from exc
         self._server._engines.pop(engine_key, None)
+        self._server._stats.pop((self._db_path, name), None)
 
     def list_tables(self) -> list[str]:
         """只读 catalog，返回本库表名（排序稳定，契约不承诺顺序）。"""
@@ -480,7 +500,11 @@ class Storage:
         normalized = _normalize_values(columns, values)
         engine = self._engine_for(name, columns)
         row_id = engine.insert(normalized)
+        for info, column, position in self._index_targets(name):
+            self._index_tree(info, column).insert(normalized[position], row_id)
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
+        self._flush_indexes(name)
+        self._invalidate_stats(name)
         return row_id
 
     def scan(self, name: str) -> Iterator[Row]:
@@ -496,13 +520,210 @@ class Storage:
         columns = self._live_catalog().get(name)
         normalized = _normalize_values(columns, values)
         engine = self._engine_for(name, columns)
+        old_values = engine.get_row(row_id)[1]
         engine.update(row_id, normalized)
+        for info, column, position in self._index_targets(name):
+            if old_values[position] != normalized[position]:
+                tree = self._index_tree(info, column)
+                tree.delete(old_values[position], row_id)
+                tree.insert(normalized[position], row_id)
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
+        self._flush_indexes(name)
+        self._invalidate_stats(name)
 
     def delete_row(self, name: str, row_id: RowId) -> None:
         """删除一行：engine 定位 → 移除槽 → 页内紧凑（D15）。"""
         _validate_table_name(name)
         columns = self._live_catalog().get(name)
         engine = self._engine_for(name, columns)
+        old_values = engine.get_row(row_id)[1]
+        for info, column, position in self._index_targets(name):
+            self._index_tree(info, column).delete(old_values[position], row_id)
         engine.delete(row_id)
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
+        self._flush_indexes(name)
+        self._invalidate_stats(name)
+
+    # ---- 索引（V3 M3/D27–D46） ----
+
+    @property
+    def _index_dir(self) -> Path:
+        """本库的索引目录（D27：每库一个 indexes/ 子目录）。"""
+        return self._db_path / INDEX_DIR_NAME
+
+    def _index_file_path(self, name: str) -> Path:
+        return self._index_dir / f"{name}{INDEX_FILE_SUFFIX}"
+
+    def _index_tree(self, info: IndexInfo, column: ColumnDef) -> IndexTree:
+        """取（或惰性创建）该索引的共享树；drop 时会从注册表移除。"""
+        key = (self._db_path, info.name)
+        tree = self._server._index_trees.get(key)
+        if tree is None:
+            tree = IndexTree(self._pool, self._index_file_path(info.name), column)
+            self._server._index_trees[key] = tree
+        return tree
+
+    def _index_targets(self, table: str) -> list[tuple[IndexInfo, ColumnDef, int]]:
+        """该表全部索引的（定义，列定义，列在行值元组中的位置）。"""
+        catalog = self._live_catalog()
+        columns = catalog.get(table)
+        targets: list[tuple[IndexInfo, ColumnDef, int]] = []
+        for info in catalog.indexes_for_table(table):
+            for position, column in enumerate(columns):
+                if column.name == info.column:
+                    targets.append((info, column, position))
+                    break
+        return targets
+
+    def _flush_indexes(self, table: str) -> None:
+        """把该表涉及的全部索引文件落盘（D11 纪律）。"""
+        for info, _column, _position in self._index_targets(table):
+            self._pool.flush(self._index_file_path(info.name))
+
+    def create_index(self, name: str, table: str, column: str) -> None:
+        """建索引：建文件 → 全表扫描灌数据 → 登记系统表（D23 式编排）。
+
+        采用"先灌数据、最后登记"的顺序：登记在前的崩溃会留下"登记存在但
+        索引为空"，它会静默返回空结果；登记在后最多留下孤儿文件，由启动
+        校验报 E_STORAGE。
+        """
+        _validate_index_name(name)
+        _validate_table_name(table)
+        catalog = self._live_catalog()
+        columns = catalog.get(table)                 # 表不存在 → E_TABLE_NOT_FOUND
+        column_def = _column_named(columns, column)  # 列不存在 → E_COLUMN_NOT_FOUND
+        if name in catalog.indexes:
+            raise SqlError(E_INDEX_EXISTS, f"index already exists: {name}")
+        if any(
+            info.table == table and info.column == column
+            for info in catalog.indexes.values()
+        ):
+            raise SqlError(  # D36
+                E_INDEX_EXISTS, f"index already exists on {table}.{column}"
+            )
+
+        index_path = self._index_file_path(name)
+        try:
+            create_index_file(index_path, column_def.type)
+        except SqlError:
+            try:
+                index_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+        position = [item.name for item in columns].index(column)
+        try:
+            tree = IndexTree(self._pool, index_path, column_def)
+            for row_id, values in self._engine_for(table, columns).scan():
+                tree.insert(values[position], row_id)
+            self._pool.flush(index_path)
+            catalog.register_index(name, table, column)
+        except SqlError:
+            self._pool.discard(index_path)
+            try:
+                index_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        self._server._index_trees[(self._db_path, name)] = tree
+
+    def drop_index(self, name: str) -> None:
+        """删索引：先摘登记，再丢缓存、删文件；unlink 失败按 D23 恢复登记。"""
+        _validate_index_name(name)
+        catalog = self._live_catalog()
+        info = catalog.get_index(name)  # 不存在 → E_INDEX_NOT_FOUND
+        index_path = self._index_file_path(name)
+        catalog.unregister_index(name)
+        self._pool.discard(index_path)
+        self._server._index_trees.pop((self._db_path, name), None)
+        try:
+            index_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            try:
+                catalog.register_index(name, info.table, info.column)
+            except SqlError:
+                pass
+            raise SqlError(
+                E_STORAGE, f"cannot delete index file: {index_path}"
+            ) from exc
+
+    def list_indexes(self, table: str | None = None) -> list[IndexInfo]:
+        """列出索引：不带表名返回全库，带表名则先校验表存在（顺序稳定）。"""
+        catalog = self._live_catalog()
+        if table is None:
+            return sorted(catalog.indexes.values(), key=lambda info: info.name)
+        _validate_table_name(table)
+        catalog.get(table)  # 表不存在 → E_TABLE_NOT_FOUND
+        return catalog.indexes_for_table(table)
+
+    def index_lookup(self, table: str, column: str, key: Value) -> Iterator[Row]:
+        """等值查找：返回与 scan() 同形状的行迭代器（逐行回表）。"""
+        info, column_def = self._index_target(table, column)
+        rids = self._index_tree(info, column_def).lookup(key)
+        return self._rows_for_rids(table, rids)
+
+    def index_range(
+        self,
+        table: str,
+        column: str,
+        lower: Value | None,
+        upper: Value | None,
+        *,
+        lower_inclusive: bool = True,
+        upper_inclusive: bool = True,
+    ) -> Iterator[Row]:
+        """范围查找：端点为 None 表示无界，默认闭区间。"""
+        info, column_def = self._index_target(table, column)
+        rids = self._index_tree(info, column_def).range(
+            lower,
+            upper,
+            lower_inclusive=lower_inclusive,
+            upper_inclusive=upper_inclusive,
+        )
+        return self._rows_for_rids(table, rids)
+
+    def _index_target(self, table: str, column: str) -> tuple[IndexInfo, ColumnDef]:
+        """定位（表，列）上的索引；没有则 E_INDEX_NOT_FOUND。"""
+        _validate_table_name(table)
+        catalog = self._live_catalog()
+        columns = catalog.get(table)  # 表不存在 → E_TABLE_NOT_FOUND
+        for info in catalog.indexes_for_table(table):
+            if info.column == column:
+                return info, _column_named(columns, column)
+        raise SqlError(E_INDEX_NOT_FOUND, f"no index on {table}.{column}")
+
+    def _rows_for_rids(self, table: str, rids: Sequence[RowId]) -> Iterator[Row]:
+        """按 rid 逐行回表（生成器：查询是惰性的，与 scan 一致）。"""
+        columns = self._live_catalog().get(table)
+        engine = self._engine_for(table, columns)
+        for row_id in rids:
+            yield engine.get_row(row_id)
+
+    # ---- 统计（V3 M5/D37/D38/D41） ----
+
+    def _stats_provider(self, table: str) -> TableStatsProvider:
+        """取（或惰性创建）该表的统计提供者；与 engine 同样按库共享。"""
+        key = (self._db_path, table)
+        provider = self._server._stats.get(key)
+        if provider is None:
+            columns = self._live_catalog().get(table)
+            provider = TableStatsProvider(
+                self._engine_for(table, columns), columns, table
+            )
+            self._server._stats[key] = provider
+        return provider
+
+    def _invalidate_stats(self, table: str) -> None:
+        """写入后让列级统计失效（行数/页数由 engine 增量维护，无需重算）。"""
+        provider = self._server._stats.get((self._db_path, table))
+        if provider is not None:
+            provider.invalidate()
+
+    def statistics(self, table: str) -> TableStats:
+        """返回表的行数、数据页数与列级统计（规划期只读，D38）。"""
+        _validate_table_name(table)
+        self._live_catalog().get(table)  # 表不存在 → E_TABLE_NOT_FOUND
+        return self._stats_provider(table).snapshot()

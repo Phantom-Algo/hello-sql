@@ -22,6 +22,7 @@ from runner.logical_plan.plans import (
     LogicalUpdate,
     LogicalUseDatabase,
 )
+from runner.trace_hooks import RunnerTraceSink, trace_runner_operation
 
 CurrentDatabase = Callable[[], str]
 """读取当前数据库名的回调；库名进缓存键，必须每次现取而非构造期固定。"""
@@ -45,6 +46,8 @@ class ExecutorTreeBuilder:
     表结构按 (当前数据库, 表名) 缓存：构建期只需要「表完整列序」这一静态信息，
     而同一会话里同名表可能存在于多个库且结构不同，因此库名必须进键。缓存跨语句
     存活，使同一张表在反复执行时只 describe 一次。
+
+    trace_sink: 接收构建输入、最终 Executor 树和失败的字典回调。
     """
 
     def __init__(
@@ -56,6 +59,19 @@ class ExecutorTreeBuilder:
         self._current_database = current_database
         self._schema_cache: dict[tuple[str, str], TableInfo] = {}
 
+    def __init__(
+        self,
+        describe_table: DescribeTable,
+        current_database: CurrentDatabase,
+        trace_sink: RunnerTraceSink | None = None,
+    ) -> None:
+        self._describe_table = describe_table
+        self._current_database = current_database
+        self._schema_cache: dict[tuple[str, str], TableInfo] = {}
+        self._trace_sink = trace_sink
+
+
+    @trace_runner_operation("executor", "build_executor_tree")
     def build(self, plan: LogicalPlan) -> StatementExecutor:
         """构建一棵可执行的 Executor 树。"""
         if isinstance(plan, _CATALOG_WRITING_PLANS):

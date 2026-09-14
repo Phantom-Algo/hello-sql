@@ -11,6 +11,9 @@ V1 catalog.json 只作为迁移输入（见 catalog_migration.py）。
 - file_name == <表名>.table；系统表不出现在本注册表中；
 - 任何结构非法 / 记录与文件不一致 → E_STORAGE；
 - 本层不做 SQL 语义检查（D13），只做注册表增删查与系统表持久化。
+
+追踪：公开和回滚操作都经由共享 BufferPool 发送事件，使界面能
+同时解释一次 DDL 的内存 Schema 改变和系统表写入。
 """
 
 from __future__ import annotations
@@ -21,15 +24,25 @@ from typing import Sequence
 
 from contracts.ast import ColumnDef, SqlType
 from contracts.errors import (
+    E_COLUMN_NOT_FOUND,
     E_DUP_COLUMN,
+    E_INDEX_EXISTS,
+    E_INDEX_NOT_FOUND,
     E_STORAGE,
     E_TABLE_EXISTS,
     E_TABLE_NOT_FOUND,
     SqlError,
 )
+from contracts.storage import IndexInfo
 from storage.cache import BufferPool
-from storage.constants import RESERVED_TABLE_PREFIX, TABLE_FILE_SUFFIX
+from storage.constants import (
+    INDEX_DIR_NAME,
+    INDEX_FILE_SUFFIX,
+    RESERVED_TABLE_PREFIX,
+    TABLE_FILE_SUFFIX,
+)
 from storage.syscatalog import open_system_tables, system_table_paths
+from storage.trace_hooks import trace_storage_operation
 
 
 _IDENTIFIER_RE = re.compile(r"[a-z_][a-z0-9_]*\Z")
@@ -39,14 +52,27 @@ class Catalog:
     """本库 schema 的内存注册表 + 两张页式系统表持久化（M2）。"""
 
     def __init__(self, db_dir: str | Path, pool: BufferPool) -> None:
+        """绑定数据库目录和共享缓存池，打开但尚未加载系统表。
+
+        Args:
+            db_dir: 包含系统目录页文件的单个数据库目录。
+            pool: 由 DatabaseServer 持有的进程级共享 BufferPool；
+                它同时承载可选的 B 追踪回调。
+
+        Notes:
+            构造只建立引用；内存 Schema 由 ``load`` 校验并重建。
+        """
+
         self.db_dir = Path(db_dir)
         self._pool = pool
         self._systems = open_system_tables(self.db_dir, pool)
         self.tables: dict[str, tuple[ColumnDef, ...]] = {}
         self._table_row_ids: dict[str, int] = {}
+        self.indexes: dict[str, IndexInfo] = {}
 
     # ---- 加载与校验 ----
 
+    @trace_storage_operation("catalog", "load")
     def load(self) -> None:
         """扫描两张系统表并校验，重建内存注册表；任何损坏都抛 E_STORAGE。"""
         by_name: dict[str, int] = {}
@@ -150,11 +176,79 @@ class Catalog:
                 "corrupt system catalog: table files do not match catalog",
             )
 
+        # V3 D30：索引登记的双向校验（登记 ↔ indexes/*.idx）。
+        index_rows: dict[str, IndexInfo] = {}
+        indexed_pairs: set[tuple[int, str]] = set()
+        for _row_id, values in self._systems.indexes.scan():
+            index_name, table_id, column_name, file_name = values
+            if (
+                type(index_name) is not str
+                or type(table_id) is not int
+                or type(column_name) is not str
+                or type(file_name) is not str
+            ):
+                raise SqlError(E_STORAGE, "corrupt system catalog: bad index row")
+            if index_name in index_rows:
+                raise SqlError(
+                    E_STORAGE,
+                    f"corrupt system catalog: duplicate index {index_name!r}",
+                )
+            if table_id not in by_id:
+                raise SqlError(
+                    E_STORAGE,
+                    f"corrupt system catalog: index {index_name!r} references "
+                    f"unknown table_id {table_id}",
+                )
+            table_name = by_id[table_id][0]
+            if column_name not in {column.name for column in loaded[table_name]}:
+                raise SqlError(
+                    E_STORAGE,
+                    f"corrupt system catalog: index {index_name!r} references "
+                    f"unknown column {column_name!r}",
+                )
+            if file_name != f"{index_name}{INDEX_FILE_SUFFIX}":
+                raise SqlError(
+                    E_STORAGE,
+                    f"corrupt system catalog: index file name mismatch for "
+                    f"{index_name!r}",
+                )
+            if (table_id, column_name) in indexed_pairs:
+                raise SqlError(
+                    E_STORAGE,
+                    f"corrupt system catalog: duplicate index on "
+                    f"{table_name}.{column_name}",
+                )
+            indexed_pairs.add((table_id, column_name))
+            index_rows[index_name] = IndexInfo(
+                name=index_name, table=table_name, column=column_name
+            )
+
+        index_dir = self.db_dir / INDEX_DIR_NAME
+        expected_index_files = {
+            f"{name}{INDEX_FILE_SUFFIX}" for name in index_rows
+        }
+        actual_index_files = (
+            {
+                path.name
+                for path in index_dir.glob(f"*{INDEX_FILE_SUFFIX}")
+                if path.is_file()
+            }
+            if index_dir.is_dir()
+            else set()
+        )
+        if expected_index_files != actual_index_files:
+            raise SqlError(
+                E_STORAGE,
+                "corrupt system catalog: index files do not match catalog",
+            )
+
         self.tables = loaded
         self._table_row_ids = by_name
+        self.indexes = index_rows
 
     # ---- 注册表增删查 ----
 
+    @trace_storage_operation("catalog", "register")
     def register(self, name: str, columns: Sequence[ColumnDef]) -> None:
         """登记新表：写两张系统表并 flush；失败时回滚系统行。"""
         if name in self.tables:
@@ -174,6 +268,7 @@ class Catalog:
         self.tables[name] = tuple(columns)
         self._table_row_ids[name] = table_id
 
+    @trace_storage_operation("catalog", "unregister")
     def unregister(self, name: str) -> None:
         """注销表：删两张系统表行并 flush；失败时按快照恢复。"""
         if name not in self.tables:
@@ -188,6 +283,7 @@ class Catalog:
         del self.tables[name]
         del self._table_row_ids[name]
 
+    @trace_storage_operation("catalog", "get")
     def get(self, name: str) -> tuple[ColumnDef, ...]:
         """查表结构（表不存在抛 E_TABLE_NOT_FOUND）。"""
         try:
@@ -195,17 +291,98 @@ class Catalog:
         except KeyError as exc:
             raise SqlError(E_TABLE_NOT_FOUND, f"table not found: {name}") from exc
 
+    # ---- 索引注册表（V3 D30） ----
+
+    @trace_storage_operation("catalog", "register_index")
+    def register_index(self, name: str, table: str, column: str) -> None:
+        """登记索引：写 __sys_indexes 行并 flush；失败时回滚该行。"""
+        if name in self.indexes:
+            raise SqlError(E_INDEX_EXISTS, f"index already exists: {name}")
+        if table not in self.tables:
+            raise SqlError(E_TABLE_NOT_FOUND, f"table not found: {table}")
+        if column not in {item.name for item in self.tables[table]}:
+            raise SqlError(E_COLUMN_NOT_FOUND, f"column not found: {column}")
+        if any(
+            info.table == table and info.column == column
+            for info in self.indexes.values()
+        ):
+            # D36：同一表同一列只允许一个索引。
+            raise SqlError(
+                E_INDEX_EXISTS, f"index already exists on {table}.{column}"
+            )
+
+        table_id = self._table_row_ids[table]
+        row_id = self._systems.indexes.insert(
+            (name, table_id, column, f"{name}{INDEX_FILE_SUFFIX}")
+        )
+        try:
+            self.flush()
+        except SqlError:
+            try:
+                self._systems.indexes.delete(row_id)
+            except SqlError:
+                pass
+            raise
+        self.indexes[name] = IndexInfo(name=name, table=table, column=column)
+
+    @trace_storage_operation("catalog", "unregister_index")
+    def unregister_index(self, name: str) -> None:
+        """注销索引：删 __sys_indexes 行并 flush；失败时恢复该行。"""
+        info = self.get_index(name)
+        row_id = self._index_row_id(name)
+        if row_id is None:
+            raise SqlError(E_STORAGE, f"index registration missing: {name}")
+        self._systems.indexes.delete(row_id)
+        try:
+            self.flush()
+        except SqlError:
+            self._systems.indexes.insert(
+                (
+                    name,
+                    self._table_row_ids[info.table],
+                    info.column,
+                    f"{name}{INDEX_FILE_SUFFIX}",
+                )
+            )
+            raise
+        del self.indexes[name]
+
+    @trace_storage_operation("catalog", "get_index")
+    def get_index(self, name: str) -> IndexInfo:
+        """查索引定义（索引不存在抛 E_INDEX_NOT_FOUND）。"""
+        try:
+            return self.indexes[name]
+        except KeyError as exc:
+            raise SqlError(E_INDEX_NOT_FOUND, f"index not found: {name}") from exc
+
+    def indexes_for_table(self, table: str) -> list[IndexInfo]:
+        """返回某表的全部索引（按索引名排序，顺序稳定）。"""
+        return sorted(
+            (info for info in self.indexes.values() if info.table == table),
+            key=lambda info: info.name,
+        )
+
+    def _index_row_id(self, name: str) -> int | None:
+        """在 __sys_indexes 里找到索引名对应的行 row_id。"""
+        for row_id, values in self._systems.indexes.scan():
+            if values[0] == name:
+                return row_id
+        return None
+
+    @trace_storage_operation("catalog", "names")
     def names(self) -> list[str]:
         """返回全部用户表名（稳定排序，契约不承诺顺序）。"""
         return sorted(self.tables)
 
+    @trace_storage_operation("catalog", "flush")
     def flush(self) -> None:
-        """把两张系统表的脏页写回磁盘。"""
-        for path in system_table_paths(self.db_dir):
+        """把三张系统表的脏页写回磁盘（V3 D30 起含索引系统表）。"""
+        for path in system_table_paths(self.db_dir).all():
             self._pool.flush(path)
 
     # ---- 内部：系统行写入与回滚 ----
 
+    @trace_storage_operation("catalog", "insert_system_rows")
     def _insert_table_rows(
         self, name: str, columns: Sequence[ColumnDef]
     ) -> int:
@@ -231,6 +408,7 @@ class Catalog:
             self._best_effort_delete_rows(table_id, column_row_ids)
             raise
 
+    @trace_storage_operation("catalog", "delete_system_rows")
     def _delete_table_rows(self, table_id: int) -> None:
         """删掉一个表的全部列行与表行，然后 flush。"""
         for row_id, values in list(self._systems.columns.scan()):
@@ -239,6 +417,7 @@ class Catalog:
         self._systems.tables.delete(table_id)
         self.flush()
 
+    @trace_storage_operation("catalog", "restore_table")
     def _restore_table(
         self, name: str, columns: tuple[ColumnDef, ...]
     ) -> None:
@@ -250,6 +429,7 @@ class Catalog:
             return
         self._table_row_ids[name] = table_id
 
+    @trace_storage_operation("catalog", "cleanup_rows_by_name")
     def _cleanup_rows_by_name(self, name: str) -> None:
         """清掉系统表里某个表名的任何残留行（用于恢复前清场）。"""
         stale_ids: set[int] = set()
@@ -262,6 +442,7 @@ class Catalog:
                 self._systems.columns.delete(row_id)
         self.flush()
 
+    @trace_storage_operation("catalog", "rollback_system_rows")
     def _best_effort_delete_rows(
         self, table_id: int | None, column_row_ids: Sequence[int]
     ) -> None:
