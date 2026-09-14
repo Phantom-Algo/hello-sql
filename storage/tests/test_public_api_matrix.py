@@ -187,3 +187,27 @@ def test_table_methods_reject_invalid_names(storage, method_name):
         "delete_row": lambda: storage.delete_row("Bad", 1),
     }
     _expect_code(calls[method_name], E_BAD_ARG)
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "create_index",
+        "drop_index",
+        "list_indexes",
+        "index_lookup",
+        "index_range",
+    ],
+)
+def test_index_methods_join_the_public_matrix(storage, method_name):
+    """V3：公开方法由 13 个扩到 18 个，五个索引方法必须都在。
+
+    断言的改动：方法名拼错、只在契约里声明而未在 Storage 上实现。
+    """
+    assert callable(getattr(storage, method_name, None))
+
+
+def test_index_methods_reject_reserved_prefix(storage):
+    """索引方法与表方法一样，`__sys_` 前缀属于 B 保留（E_BAD_ARG）。"""
+    _expect_code(lambda: storage.create_index("__sys_x", "users", "id"), E_BAD_ARG)
+    _expect_code(lambda: storage.drop_index("__sys_x"), E_BAD_ARG)

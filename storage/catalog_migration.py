@@ -37,6 +37,7 @@ from storage.syscatalog import (
     create_empty_system_catalog,
     system_table_paths,
 )
+from storage.pager import create_table_file
 
 
 _IDENTIFIER_RE = re.compile(r"[a-z_][a-z0-9_]*\Z")
@@ -51,6 +52,10 @@ def load_or_migrate(db_dir: str | Path, pool: BufferPool) -> Catalog:
     system_complete = tables_path.is_file() and columns_path.is_file()
 
     if system_complete:
+        if not sys_paths.indexes.is_file():
+            # V2 目录（只有两张系统表）：补建空的索引系统表（D39）。
+            # 放在 load 之前，使"缺第三张表"在同一个加载路径里被消化。
+            create_table_file(sys_paths.indexes)
         try:
             catalog = Catalog(root, pool)
             catalog.load()

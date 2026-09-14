@@ -537,6 +537,30 @@ class TableEngine:
                 yield row
 
     @trace_storage_operation("engine", "update")
+    def get_row(self, row_id: RowId) -> Row:
+        """按 row_id 取一整行（索引回表用）；找不到 → E_ROW_NOT_FOUND。
+
+        复用既有 `_locate` 的定位（含 rid→页 映射与退化全表找），
+        再按槽的溢出标志决定 inline 直解还是沿链拼回。
+        """
+        _page_no, page, slot_index = self._locate(row_id)
+        record_offset, record_length, is_overflow = _page_slot_entries(page)[
+            slot_index
+        ]
+        if not is_overflow:
+            record = bytes(page[record_offset : record_offset + record_length])
+            return decode_record(record, self._columns)
+        anchor = bytes(page[record_offset : record_offset + record_length])
+        anchor_rid, first_page, total_len = self._parse_anchor(anchor)
+        record = self._read_overflow_record(first_page, total_len)
+        row = decode_record(record, self._columns)
+        if row[0] != anchor_rid:
+            raise SqlError(
+                E_STORAGE, "corrupt overflow row: anchor row_id mismatch"
+            )
+        return row
+
+    @trace_storage_operation("engine", "update")
     def update(self, row_id: RowId, values: Sequence[Value]) -> None:
         """整行替换：删旧行（溢出时沿链回收）→ 按新长度 inline/溢出新落。
 
