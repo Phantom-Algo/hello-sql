@@ -189,7 +189,7 @@ def test_dml_runtime_reports_affected_rows(tmp_path) -> None:
 
 
 def test_runtime_samples_are_bounded_but_row_count_is_complete(tmp_path) -> None:
-    """Runtime keeps five samples while retaining the complete operator count."""
+    """运行时阶段仅保留五行样例，同时继续记录完整算子计数。"""
 
     router = ExecutionTraceRouter()
     runner = _runner(tmp_path, router)
@@ -212,10 +212,10 @@ def test_runtime_samples_are_bounded_but_row_count_is_complete(tmp_path) -> None
 
 
 def test_broken_c_trace_sink_cannot_change_query_result(tmp_path) -> None:
-    """A broken observer is isolated from every original SQL result."""
+    """追踪观察器故障必须与所有原始 SQL 结果隔离。"""
 
     def broken_sink(_payload: dict[str, object]) -> None:
-        """Simulate an implementation error inside the future viewer."""
+        """模拟未来查看器内部发生的实现错误。"""
 
         raise RuntimeError("trace viewer failed")
 

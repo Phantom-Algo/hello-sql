@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>HELLO-SQL Query Inspector</title>
+  <title>HELLO-SQL 查询流程检查器</title>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -15,24 +15,24 @@
     <header class="topbar">
       <div class="brand-wrap">
         <div class="brand">HELLO-SQL</div>
-        <div class="brand-sub"><span class="pulse"></span> QUERY FLOW INSPECTOR</div>
+        <div class="brand-sub"><span class="pulse"></span> 查询流程检查器</div>
       </div>
       <div class="query-meta">
-        <span id="query-number">QUERY —</span>
+        <span id="query-number">查询 —</span>
         <span class="meta-separator">•</span>
-        <span id="query-trace">TRACE —</span>
+        <span id="query-trace">追踪 —</span>
         <button id="debug-toggle" class="debug-toggle" type="button" aria-pressed="false" title="显示或隐藏原始 JSON 数据">
           <span class="debug-toggle-dot" aria-hidden="true"></span>
-          RAW DATA <b>OFF</b>
+          原始数据 <b>关闭</b>
         </button>
-        <span id="query-status" class="status">WAITING</span>
+        <span id="query-status" class="status">等待中</span>
       </div>
     </header>
 
     <nav class="filters" aria-label="模块筛选">
       <button class="filter active" data-module="ALL">
         <span class="filter-icon" aria-hidden="true">◇</span>
-        <span>ALL <small>A + B + C</small></span>
+        <span>全部 <small>A + B + C</small></span>
       </button>
       <button class="filter owner-a" data-module="A">
         <span class="filter-icon code-icon" aria-hidden="true">&lt;/&gt;</span>
@@ -51,20 +51,20 @@
     <section class="sql-card card">
       <div class="source-heading">
         <div>
-          <div class="eyebrow source-title"><span aria-hidden="true">⌁</span> SOURCE LINK</div>
-          <div class="source-hint">点击 SQL 片段即可查看它对应的 Token、节点与数据页。</div>
+          <div class="eyebrow source-title"><span aria-hidden="true">⌁</span> 源码联动</div>
+          <div class="source-hint">点击 SQL 片段即可查看它对应的词法单元、节点与数据页。</div>
         </div>
-        <button id="clear-link" class="ghost-button" type="button">RESET LINK</button>
+        <button id="clear-link" class="ghost-button" type="button">清除联动</button>
       </div>
       <div class="sql-code-row">
         <span class="line-number" aria-hidden="true">1</span>
-        <pre id="sql-text" class="sql-source">Waiting for a SQL trace…</pre>
+        <pre id="sql-text" class="sql-source">正在等待 SQL 追踪…</pre>
       </div>
       <div class="sql-footer">
-        <span id="database-name">DATABASE —</span>
-        <span id="source-span">SOURCE —</span>
+        <span id="database-name">数据库 —</span>
+        <span id="source-span">源码范围 —</span>
         <span id="elapsed">0.000 ms</span>
-        <span id="link-summary">TOKENS 0 · NODES 0 · PAGES 0</span>
+        <span id="link-summary">词法单元 0 · 节点 0 · 数据页 0</span>
       </div>
     </section>
 
@@ -72,11 +72,11 @@
       <aside class="pipeline card">
         <div class="section-heading">
           <div>
-            <span class="eyebrow">PIPELINE</span>
-            <h2>Processing stages</h2>
+            <span class="eyebrow">处理流水线</span>
+            <h2>处理阶段</h2>
             <p>SQL 从输入到执行的完整流程</p>
           </div>
-          <span class="count-label"><span id="stage-count">0</span> stages</span>
+          <span class="count-label"><span id="stage-count">0</span> 个阶段</span>
         </div>
         <div id="stage-list" class="stage-list"></div>
       </aside>
@@ -84,15 +84,15 @@
       <article class="detail card">
         <div class="detail-heading">
           <div>
-            <span class="eyebrow">FLOW EXPLORER</span>
-            <h2>Query structure</h2>
-            <p>在结构树、Token 和物理页之间切换</p>
+            <span class="eyebrow">流程探索器</span>
+            <h2>查询结构</h2>
+            <p>在结构树、词法单元和物理页之间切换</p>
           </div>
           <nav class="entity-tabs" aria-label="联动对象">
-            <button class="entity-tab" data-view="stage">STAGE <small id="stage-tab-count">0</small></button>
-            <button class="entity-tab active" data-view="nodes">NODES <small id="node-tab-count">0</small></button>
-            <button class="entity-tab" data-view="tokens">TOKENS <small id="token-tab-count">0</small></button>
-            <button class="entity-tab" data-view="pages">PAGES <small id="page-tab-count">0</small></button>
+            <button class="entity-tab" data-view="stage">阶段 <small id="stage-tab-count">0</small></button>
+            <button class="entity-tab active" data-view="nodes">节点 <small id="node-tab-count">0</small></button>
+            <button class="entity-tab" data-view="tokens">词法单元 <small id="token-tab-count">0</small></button>
+            <button class="entity-tab" data-view="pages">数据页 <small id="page-tab-count">0</small></button>
           </nav>
         </div>
 
@@ -112,20 +112,26 @@
             </div>
             <p id="detail-description" class="description"></p>
             <div class="contracts">
-              <div><span>INPUT</span><code id="input-contract">—</code></div>
+              <div><span>输入</span><code id="input-contract">—</code></div>
               <div class="arrow">→</div>
-              <div><span>OUTPUT</span><code id="output-contract">—</code></div>
+              <div><span>输出</span><code id="output-contract">—</code></div>
             </div>
             <div class="events-heading">
-              <span class="eyebrow">STAGE EVENTS</span>
-              <span class="count-label"><b id="event-count">0</b> events</span>
+              <span class="eyebrow">阶段事件</span>
+              <span class="count-label"><b id="event-count">0</b> 个事件</span>
+            </div>
+            <div id="event-toolbar" class="event-toolbar" hidden>
+              <span id="event-summary">默认展示主要语法步骤</span>
+              <button id="technical-events-toggle" class="technical-events-toggle" type="button" aria-expanded="false">
+                展开底层步骤 <b id="technical-event-count">0</b>
+              </button>
             </div>
             <div id="event-list" class="event-list"></div>
             <section class="raw-data-panel debug-only" aria-label="阶段原始 JSON">
-              <div class="panel-label">RAW INPUT / OUTPUT</div>
+              <div class="panel-label">原始输入 / 输出</div>
               <div class="snapshot-grid">
-                <section><div class="panel-label">INPUT SNAPSHOT</div><pre id="input-snapshot">{}</pre></section>
-                <section><div class="panel-label">OUTPUT SNAPSHOT</div><pre id="output-snapshot">{}</pre></section>
+                <section><div class="panel-label">输入快照</div><pre id="input-snapshot">{}</pre></section>
+                <section><div class="panel-label">输出快照</div><pre id="output-snapshot">{}</pre></section>
               </div>
             </section>
           </div>
@@ -133,14 +139,14 @@
 
         <div id="nodes-pane" class="entity-pane">
           <div class="link-view-heading">
-            <div><span class="eyebrow">TREE VISUALIZER</span><h1>AST / Logical Plan / Executor</h1></div>
+            <div><span class="eyebrow">树形可视化</span><h1>AST / Logical Plan / Executor Tree</h1></div>
             <span id="selected-node-label" class="selection-label">未选择</span>
           </div>
           <div id="node-stage-tabs" class="tree-stage-tabs" role="group" aria-label="树类型切换"></div>
           <section class="tree-surface">
             <div class="tree-surface-heading">
-              <span>STRUCTURE</span>
-              <span class="tree-count"><b id="tree-node-count">0</b> nodes</span>
+              <span>树形结构</span>
+              <span class="tree-count"><b id="tree-node-count">0</b> 个节点</span>
             </div>
             <div id="node-tree" class="tree-viewport" role="tree" aria-label="SQL 处理节点树"></div>
           </section>
@@ -149,14 +155,14 @@
             <section class="link-detail">
               <div id="node-facts" class="fact-grid"></div>
               <div class="debug-only">
-                <div class="panel-label">NODE SNAPSHOT · RAW JSON</div>
+                <div class="panel-label">节点快照 · 原始 JSON</div>
                 <pre id="node-snapshot">{
   "提示": "点击树中节点查看详情"
 }</pre>
               </div>
               <div class="relations">
-                <div><span>RELATED TOKENS</span><div id="node-token-links" class="relation-items"></div></div>
-                <div><span>RELATED PAGES</span><div id="node-page-links" class="relation-items"></div></div>
+                <div><span>关联词法单元</span><div id="node-token-links" class="relation-items"></div></div>
+                <div><span>关联数据页</span><div id="node-page-links" class="relation-items"></div></div>
               </div>
             </section>
           </details>
@@ -164,21 +170,21 @@
 
         <div id="tokens-pane" class="entity-pane" hidden>
           <div class="link-view-heading">
-            <div><span class="eyebrow">LEXER TOKENS</span><h1>Token stream &amp; source offsets</h1></div>
+            <div><span class="eyebrow">Lexer 结果</span><h1>Token 流与源码偏移</h1></div>
             <span id="selected-token-label" class="selection-label">未选择</span>
           </div>
           <div id="token-list" class="token-list"></div>
           <details id="token-inspector" class="inspector-drawer">
-            <summary>Token 详情与关联</summary>
+            <summary>词法单元详情与关联</summary>
             <section class="link-detail token-detail">
               <div id="token-facts" class="fact-grid"></div>
               <div class="debug-only">
-                <div class="panel-label">TOKEN DETAIL · RAW JSON</div>
+                <div class="panel-label">词法单元详情 · 原始 JSON</div>
                 <pre id="token-snapshot">{}</pre>
               </div>
               <div class="relations">
-                <div><span>RELATED NODES</span><div id="token-node-links" class="relation-items"></div></div>
-                <div><span>RELATED PAGES</span><div id="token-page-links" class="relation-items"></div></div>
+                <div><span>关联节点</span><div id="token-node-links" class="relation-items"></div></div>
+                <div><span>关联数据页</span><div id="token-page-links" class="relation-items"></div></div>
               </div>
             </section>
           </details>
@@ -186,7 +192,7 @@
 
         <div id="pages-pane" class="entity-pane" hidden>
           <div class="link-view-heading">
-            <div><span class="eyebrow">PHYSICAL PAGES</span><h1>Cache / Pager / Engine</h1></div>
+            <div><span class="eyebrow">物理数据页</span><h1>Buffer Cache / Pager / Storage Engine</h1></div>
             <span id="selected-page-label" class="selection-label">未选择</span>
           </div>
           <div id="page-list" class="page-list"></div>
@@ -195,14 +201,14 @@
             <section class="link-detail page-detail">
               <div id="page-facts" class="fact-grid"></div>
               <div class="debug-only">
-                <div class="panel-label">PAGE SNAPSHOT · RAW JSON</div>
+                <div class="panel-label">数据页快照 · 原始 JSON</div>
                 <pre id="page-snapshot">{}</pre>
               </div>
-              <div class="panel-label">PAGE OPERATIONS</div>
+              <div class="panel-label">数据页操作</div>
               <div id="page-event-list" class="event-list"></div>
               <div class="relations">
-                <div><span>RELATED SQL TOKENS</span><div id="page-token-links" class="relation-items"></div></div>
-                <div><span>RELATED NODES</span><div id="page-node-links" class="relation-items"></div></div>
+                <div><span>关联 SQL 词法单元</span><div id="page-token-links" class="relation-items"></div></div>
+                <div><span>关联节点</span><div id="page-node-links" class="relation-items"></div></div>
               </div>
             </section>
           </details>
@@ -211,7 +217,7 @@
     </section>
     <footer class="footer">
       <span>HELLO-SQL <b>v3.0</b></span>
-      <span>BETTER SQL · DEEPER UNDERSTANDING</span>
+      <span>看清 SQL · 理解每一步</span>
     </footer>
   </main>
   <script src="/app.js" defer></script>
