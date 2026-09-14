@@ -16,7 +16,15 @@ import pytest
 from compiler import parse, parse_script
 from runner import Runner
 from storage import DatabaseServer
-from UI import InspectionViewer, QueryInspector
+from UI import (
+    InspectionModule,
+    InspectionSnapshot,
+    InspectionViewer,
+    QueryInspector,
+    QueryTrace,
+    TraceStatus,
+    trace_parse,
+)
 
 
 def _inspector_with_trace(tmp_path) -> QueryInspector:
@@ -35,6 +43,35 @@ def _inspector_with_trace(tmp_path) -> QueryInspector:
     return inspector
 
 
+def _compiler_only_snapshot(sql: str) -> InspectionSnapshot:
+    """把一次成功 A 编译追踪包装成查看器可读取的只读快照。
+
+    B/C 尚未实现 V3 索引执行时，A 的 AST 可视化仍可独立验收。该辅助函数
+    只使用 trace_parse 已产生的真实四阶段记录构造 QueryTrace，不补造运行、
+    存储事件，也不修改公共追踪契约。
+
+    Args:
+        sql: 需要在查看器 NODES 面板中验证的单条索引 DDL。
+
+    Returns:
+        仅包含 A 阶段、可直接交给 InspectionViewer 的 InspectionSnapshot。
+    """
+    compiled = trace_parse(sql)
+    assert compiled.succeeded
+    parsed = compiled.statements[0]
+    trace = QueryTrace(
+        trace_id="trace-index-visual",
+        query_number=1,
+        sql=parsed.sql,
+        database="main",
+        status=TraceStatus.SUCCESS,
+        stages=compiled.stages,
+        source_span=parsed.span,
+        result_summary={"kind": "compiler-only-verification"},
+    )
+    return InspectionSnapshot(trace, InspectionModule.A, trace.stages)
+
+
 def _read_json(url: str) -> dict[str, object]:
     """读取本机查看器 URL 并解码为 UTF-8 JSON 字典。"""
 
@@ -50,6 +87,11 @@ def test_viewer_serves_packaged_page_and_filtered_trace_api(tmp_path):
     JavaScript 选中阶段后会为 ``empty-detail`` 设置 ``hidden``；CSS
     必须显式将该状态设为 ``display: none``，避免 ``.empty-state``
     的 grid 样式覆盖浏览器默认隐藏规则并把真实详情挤到下方。
+
+    新版首屏默认展示 NODES 树，并将原始 JSON 放进统一的
+    ``debug-only`` 区域。顶部 ``debug-toggle`` 默认处于关闭状态，用户
+    需要时才显示快照；节点、Token、页的摘要和关联关系则始终保留。桌面
+    端 Pipeline 使用独立纵向滚动，避免十四个阶段撑长整页形成大片留白。
     """
 
     inspector = _inspector_with_trace(tmp_path)
@@ -65,15 +107,40 @@ def test_viewer_serves_packaged_page_and_filtered_trace_api(tmp_path):
         assert 'data-view="pages"' in page
         assert 'id="node-stage-tabs"' in page
         assert 'id="node-tree"' in page
+        assert '<div id="stage-pane" class="entity-pane" hidden>' in page
+        assert '<div id="nodes-pane" class="entity-pane">' in page
+        assert 'id="node-inspector"' in page
+        assert 'id="token-inspector"' in page
+        assert 'id="page-inspector"' in page
+        assert 'id="debug-toggle"' in page
+        assert 'id="node-facts"' in page
+        assert 'id="token-facts"' in page
+        assert 'id="page-facts"' in page
+        assert page.count('class="debug-only"') == 3
+        assert page.count("debug-only") == 4
+        assert 'class="raw-data-panel debug-only"' in page
         with urlopen(f"{root}app.css", timeout=3) as response:
             stylesheet = response.read().decode("utf-8")
         assert ".empty-state[hidden] { display: none; }" in stylesheet
+        assert ".debug-only { display: none !important; }" in stylesheet
+        assert "body.show-debug .debug-only { display: block !important; }" in stylesheet
+        assert "height: clamp(580px, 68vh, 760px);" in stylesheet
+        assert "overflow-y: auto;" in stylesheet
+        assert "scrollbar-gutter: stable;" in stylesheet
         assert ".tree-children::before" in stylesheet
         assert ".tree-node" in stylesheet
         with urlopen(f"{root}app.js", timeout=3) as response:
             script = response.read().decode("utf-8")
         assert "function buildNodeForest(nodes)" in script
         assert "function nodeTreeBranch(" in script
+        assert 'view: "nodes"' in script
+        assert 'state.view = "nodes"' in script
+        assert "function setDebugVisibility(enabled)" in script
+        assert "function toggleDebugVisibility()" in script
+        assert "function renderFacts(containerId, facts)" in script
+        assert "setDebugVisibility(false)" in script
+        assert 'node.kind === "CreateIndexStmt"' in script
+        assert 'node.kind === "DropIndexStmt"' in script
 
         payload = _read_json(f"{root}api/trace?module=A")
         assert payload["module"] == "A"
@@ -124,3 +191,59 @@ def test_query_inspector_lazily_opens_and_closes_cross_platform_view(tmp_path):
     assert not rebuilt_opened
     assert "module=ALL" in rebuilt_url
     inspector.close_view()
+
+
+# 两个用例通过查看器真实 JSON API 验证创建和删除索引节点均可供网页树渲染。
+@pytest.mark.parametrize(
+    ("sql", "node_type", "expected_fields"),
+    [
+        (
+            "CREATE INDEX idx_users_id ON users (id);",
+            "CreateIndexStmt",
+            {"index_name": "idx_users_id", "table": "users", "column": "id"},
+        ),
+        (
+            "DROP INDEX idx_users_id;",
+            "DropIndexStmt",
+            {"index_name": "idx_users_id"},
+        ),
+    ],
+)
+def test_viewer_exposes_index_ast_nodes_to_inspect_tree(
+    sql: str,
+    node_type: str,
+    expected_fields: dict[str, str],
+) -> None:
+    """验证 /inspect A 的 linkage 包含可点击的索引 AST 根节点。
+
+    浏览器树只消费 API 的 linkage.nodes，因此本测试启动真实本机查看器、读取
+    module=A JSON，并检查节点类型、阶段、父子关系和完整快照字段。只要这些
+    数据存在，通用 renderNodeTree 就会按 a.ast 树入口渲染节点卡片；前端的
+    nodeSummary 再为 CREATE/DROP INDEX 提供人类可读摘要。
+
+    Args:
+        sql: 当前查看器快照中的索引 DDL 原文。
+        node_type: 树节点应显示的 AST 类型名称。
+        expected_fields: 点击节点后详情面板应显示的 AST 字段。
+    """
+    snapshot = _compiler_only_snapshot(sql)
+    viewer = InspectionViewer(lambda module: snapshot)
+    root = viewer.start()
+    try:
+        payload = _read_json(f"{root}api/trace?module=A")
+        ast_nodes = [
+            node
+            for node in payload["linkage"]["nodes"]
+            if node["stage_id"] == "a.ast"
+        ]
+
+        assert len(ast_nodes) == 1
+        assert ast_nodes[0]["kind"] == node_type
+        assert ast_nodes[0]["parent_id"] is None
+        assert ast_nodes[0]["snapshot"] == {
+            "node_type": node_type,
+            "fields": expected_fields,
+        }
+        assert ast_nodes[0]["token_ids"]
+    finally:
+        viewer.close()

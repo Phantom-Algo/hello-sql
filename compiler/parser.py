@@ -9,6 +9,14 @@ AST 为止，所有语义检查和执行均由 runner 与 storage 模块完成�
 Parser 的输入是 lexer.tokenize() 生成、且以 EOF 结尾的 Token 序列。它的
 输出最终会是 contracts.ast 中定义的 Statement。所有语法层的失败统一通过
 contracts.errors.ParseError 报告，因此调用者可以稳定获得 E_SYNTAX 与行列号。
+
+V3 在共享契约中新增 CreateIndexStmt 与 DropIndexStmt。本模块显式
+导入这两种 AST 节点，使索引 DDL 分派与构建只依赖 contracts.ast
+的公共类型。CREATE 二级分派已能区分 DATABASE、TABLE 与 INDEX，
+并由独立方法将索引名、表名和列名组装成 CreateIndexStmt。DROP
+二级分派同样能区分 DATABASE、TABLE 与 INDEX，并由专用方法读取索引名、
+完成小写化后构建 DropIndexStmt。Parser
+仍不判断索引、表或列是否真实存在，这些语义检查由 C/B 完成。
 """
 
 from __future__ import annotations
@@ -23,8 +31,10 @@ from contracts.ast import (
     Column,
     ColumnDef,
     CreateDatabaseStmt,
+    CreateIndexStmt,
     CreateTableStmt,
     DropDatabaseStmt,
+    DropIndexStmt,
     DropTableStmt,
     DeleteStmt,
     Expr,
@@ -259,7 +269,7 @@ class Parser:
     def parse(self) -> Statement:
         """解析一条完整 SQL 语句，允许末尾至多存在一个分号。
 
-        V2 继续保留 V1.1 的单语句行为。本方法先解析语句主体，再通过
+        V3 继续保留 V1.1/V2 的单语句行为，并加入索引 DDL。本方法先解析语句主体，再通过
         ``_expect_single_statement_end`` 检查可选分号和 EOF，因此第二条语句
         与连续分号仍会报告 E_SYNTAX。
 
@@ -296,6 +306,8 @@ class Parser:
         不对 source 使用字符串分割，因此字符串字面量中的分号仍属于原 Token。
         语句之间必须存在分号，只有最后一条语句可以省略分号。每条语句使用
         Token 的零基半开偏移截取原文，再转换为契约要求的一基闭区间 span。
+        CREATE INDEX 与 DROP INDEX 不设置特殊分支，因此其原文和范围与所有
+        V1/V2 语句遵循同一套全局定位规则。
 
         Args:
             source: 生成当前 Parser Token 序列的完整原始 SQL 文本。
@@ -391,8 +403,9 @@ class Parser:
         """解析当前游标处的一条 SQL 语句主体，但不处理末尾分号和 EOF。
 
         当前阶段已分派 V1.1 的全部九类语句：CREATE、DROP、USE、INSERT、
-        SELECT、UPDATE、DELETE。CREATE 和 DROP 会在第二个关键字处继续区分
-        DATABASE 与 TABLE；其他关键字各有唯一的语句解析函数。
+        SELECT、UPDATE、DELETE。CREATE 会在第二个关键字处继续区分
+        DATABASE、TABLE 与 V3 INDEX；DROP 当前继续区分 DATABASE 与
+        TABLE，其他关键字各有唯一的语句解析函数。
 
         Returns:
             已构造的任意 V1.1 Statement AST 节点。
@@ -423,19 +436,24 @@ class Parser:
             f"found {self._format_actual_token(current)}",
         )
 
-    # 此内部方法在消费 CREATE 后，识别它创建的是数据库还是表。
-    def _parse_create_statement(self) -> CreateDatabaseStmt | CreateTableStmt:
-        """解析 ``CREATE DATABASE id`` 或 ``CREATE TABLE id (...)``。
+    # 此内部方法在消费 CREATE 后，识别目标是数据库、表还是索引。
+    def _parse_create_statement(
+        self,
+    ) -> CreateDatabaseStmt | CreateTableStmt | CreateIndexStmt:
+        """解析 CREATE 二级关键字并分派到对应的专用解析方法。
 
-        CREATE 后的第二个关键字决定分支。这里仅依据 SQL 语法选择 AST 类型，
-        不检查同名数据库或表是否已经存在；那些状态相关检查必须由 C/B 完成。
+        方法先消费 ``CREATE``，再查看下一个 Token：``DATABASE``、
+        ``TABLE`` 和 ``INDEX`` 分别进入各自的专用函数。该方法只依据
+        SQL 语法选择 AST 分支，不检查同名数据库、表或索引是否已经
+        存在；这些状态相关检查必须由 C/B 完成。
 
         Returns:
-            CreateDatabaseStmt 或 CreateTableStmt。
+            被选中的专用解析方法构建的 CreateDatabaseStmt、
+            CreateTableStmt 或 CreateIndexStmt。
 
         Raises:
-            ParseError: CREATE 后缺少 DATABASE/TABLE，或后续结构不符合相应
-                文法时抛出。
+            ParseError: CREATE 后缺少 DATABASE/TABLE/INDEX，或选中分支的
+                后续结构不符合相应文法时抛出。
         """
         self.expect(TokenType.KW_CREATE)
         target = self.peek()
@@ -443,25 +461,64 @@ class Parser:
             return self._parse_create_database_statement()
         if target.type is TokenType.KW_TABLE:
             return self._parse_create_table_statement()
+        if target.type is TokenType.KW_INDEX:
+            return self._parse_create_index_statement()
 
         raise ParseError(
             target.position.line,
             target.position.column,
-            f"expected DATABASE or TABLE after CREATE, found {self._format_actual_token(target)}",
+            "expected DATABASE, TABLE, or INDEX after CREATE, "
+            f"found {self._format_actual_token(target)}",
         )
 
-    # 此内部方法在消费 DROP 后，识别它删除的是数据库还是表。
-    def _parse_drop_statement(self) -> DropDatabaseStmt | DropTableStmt:
-        """解析 ``DROP DATABASE id`` 或 ``DROP TABLE id``。
+    # 此专用方法解析单列 CREATE INDEX 语句体并构建共享 AST。
+    def _parse_create_index_statement(self) -> CreateIndexStmt:
+        """解析 ``INDEX index_name ON table_name (column_name)`` 并返回 AST。
 
-        DROP 后的第二个关键字决定 AST 节点。Parser 只验证语法形式，不能也
-        不应判断数据库是否为 main、是否正在使用，或目标是否真实存在。
+        调用本方法时，上层已经消费 ``CREATE``，当前 Token 必须是
+        ``INDEX``。方法按固定文法顺序消费索引名、``ON``、表名、
+        左括号、单个列名与右括号。三个名称都通过 ``parse_identifier``
+        读取，因此会统一转换为小写，同时拒绝把 SQL 保留字当作名称。
+        V3 只支持单列、非 UNIQUE 索引；索引是否重名、表和列是否存在
+        属于语义层，不在本方法中访问 Catalog 或 Storage。
 
         Returns:
-            DropDatabaseStmt 或 DropTableStmt。
+            完整、名称已小写化的 CreateIndexStmt。
 
         Raises:
-            ParseError: DROP 后没有 DATABASE/TABLE，或没有合法名称时抛出。
+            ParseError: 任一必需关键字、标识符或括号缺失，或出现
+                不支持的多列结构时抛出；位置指向第一个不符合预期的 Token。
+        """
+        self.expect(TokenType.KW_INDEX)
+        index_name = self.parse_identifier()
+        self.expect(TokenType.KW_ON, "ON after CREATE INDEX name")
+        table = self.parse_identifier()
+        self.expect(TokenType.LPAREN, "'(' before CREATE INDEX column")
+        column = self.parse_identifier()
+        self.expect(TokenType.RPAREN, "')' after CREATE INDEX column")
+        return CreateIndexStmt(
+            index_name=index_name,
+            table=table,
+            column=column,
+        )
+
+    # 此内部方法在消费 DROP 后，识别目标是数据库、表还是索引。
+    def _parse_drop_statement(
+        self,
+    ) -> DropDatabaseStmt | DropTableStmt | DropIndexStmt:
+        """解析 DROP 二级关键字并分派到对应的专用解析方法。
+
+        DROP 后的第二个关键字决定 AST 分支：DATABASE、TABLE 与 INDEX
+        分别进入对应的专用解析方法。Parser 只验证语法形式，不能也不应判断
+        数据库是否为 main、是否正在使用，或表和索引是否真实存在。
+
+        Returns:
+            专用解析方法构建的 DropDatabaseStmt、DropTableStmt 或
+            DropIndexStmt。
+
+        Raises:
+            ParseError: DROP 后缺少 DATABASE/TABLE/INDEX，或选中分支的
+                后续结构不符合相应文法时抛出。
         """
         self.expect(TokenType.KW_DROP)
         target = self.peek()
@@ -469,12 +526,36 @@ class Parser:
             return self._parse_drop_database_statement()
         if target.type is TokenType.KW_TABLE:
             return self._parse_drop_table_statement()
+        if target.type is TokenType.KW_INDEX:
+            return self._parse_drop_index_statement()
 
         raise ParseError(
             target.position.line,
             target.position.column,
-            f"expected DATABASE or TABLE after DROP, found {self._format_actual_token(target)}",
+            "expected DATABASE, TABLE, or INDEX after DROP, "
+            f"found {self._format_actual_token(target)}",
         )
+
+    # 此专用方法读取 DROP INDEX 的索引名并构建共享 AST。
+    def _parse_drop_index_statement(self) -> DropIndexStmt:
+        """解析 INDEX index_name，并返回索引名已标准化的 DropIndexStmt。
+
+        调用本方法时，上层已经消费 DROP，当前 Token 必须是 INDEX。方法先
+        消费该关键字，再通过 parse_identifier 读取唯一需要的索引名；该公共
+        标识符入口会统一转换为小写，并拒绝 SQL 保留字。V3 规定索引名在同一
+        数据库中唯一，因此 DROP INDEX 不需要表名或列名。索引是否真实存在
+        属于 B 的权威状态，由存储边界返回 E_INDEX_NOT_FOUND，A 不访问
+        Catalog 或 Storage。
+
+        Returns:
+            仅包含小写索引名的 DropIndexStmt。
+
+        Raises:
+            ParseError: INDEX 后缺少普通标识符，或出现保留字等不合法名称时
+                抛出；错误位置指向第一个不符合预期的 Token。
+        """
+        self.expect(TokenType.KW_INDEX)
+        return DropIndexStmt(index_name=self.parse_identifier())
 
     # 此内部方法解析 CREATE DATABASE 的名称，并直接构建其 AST 节点。
     def _parse_create_database_statement(self) -> CreateDatabaseStmt:

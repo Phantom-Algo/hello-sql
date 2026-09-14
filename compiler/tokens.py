@@ -14,6 +14,8 @@ contracts.ast 中规定的 AST。
 4. 行号与列号都从 1 开始计数。例如输入第一个字符的位置为 (1, 1)；
 5. 关键字通过专用 TokenType 表示。这样 parser 可以清楚地区分关键字与
    普通标识符，也能拒绝把保留字作为库名、表名或列名。
+6. V3 在本层只新增 ``INDEX`` 保留字，供后续 parser 区分
+   ``CREATE INDEX`` / ``DROP INDEX`` 与已有数据库、数据表 DDL。
 """
 
 from __future__ import annotations
@@ -62,6 +64,11 @@ class TokenType(Enum):
     KW_UPDATE = auto()
     KW_SET = auto()
     KW_DELETE = auto()
+
+    # V3 单列索引 DDL 关键字。Token 层只负责把 INDEX 与普通
+    # 标识符区分开；CREATE/DROP INDEX 的句法结构将由 parser 后续实现。
+    KW_INDEX = auto()
+
     # V2 逻辑表达式关键字。AND、OR、NOT 在 parser 中将按 NOT > AND > OR
     # 的优先级构建 AST；Token 层只负责将它们与普通标识符区分开。
     KW_AND = auto()
@@ -169,6 +176,9 @@ KEYWORDS: dict[str, TokenType] = {
     "UPDATE": TokenType.KW_UPDATE,
     "SET": TokenType.KW_SET,
     "DELETE": TokenType.KW_DELETE,
+    # INDEX 的键保持大写；lexer 会先对用户输入执行 upper()，
+    # 因此 INDEX、index 与 Index 都会稳定生成同一个专用 Token。
+    "INDEX": TokenType.KW_INDEX,
     "AND": TokenType.KW_AND,
     "OR": TokenType.KW_OR,
     "NOT": TokenType.KW_NOT,
