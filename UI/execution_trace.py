@@ -1,17 +1,13 @@
-"""Query-level tracing for C: Binder, plans, optimizer, executors, and runtime.
+"""C 模块的查询级追踪：名称绑定、计划、执行树与运行时。
 
-The runner core emits plain dictionaries through runner.trace_hooks.  This
-module snapshots AST, schema, plan, executor, row, and result objects while
-the callback is active, then converts those snapshots into the shared
-StageTrace contract.  A viewer therefore replays captured data and never
-binds or executes SQL a second time.
+Runner 核心通过 ``runner.trace_hooks`` 发送普通字典。本模块在回调
+活动期间对 AST、表结构、计划、执行树、数据行与结果对象做快照，
+再转换为共享 ``StageTrace`` 契约。因此查看器只回放已捕获数据，
+不会再次绑定或执行 SQL。
 
-ExecutionTraceRouter is intended to live as long as Runner.  One capture
-context is opened per statement, so concurrent and nested statements do not
-share events.  The optimizer reports one record per statement: a success
-record carrying the OptimizationLog, or an explicit disabled record when the
-Runner switch is off.  A statement whose binding already failed reports no
-optimizer record at all, so the stage stays SKIPPED rather than DISABLED.
+``ExecutionTraceRouter`` 的生命周期与 Runner 一致，每条语句单独打开
+捕获上下文，使并发和嵌套语句不会混用事件。当前尚未实现优化器，
+因此收集器明确发布“未启用”阶段，而不伪造优化结果。
 """
 
 from __future__ import annotations
@@ -76,7 +72,7 @@ _STAGE_CONFIG: dict[str, tuple[str, int, str, str, str, str]] = {
 
 @dataclass(frozen=True, slots=True)
 class _ExecutionCallRecord:
-    """Detached snapshot of one completed, failed, or stopped C call."""
+    """一次已完成、失败或提前停止的 C 调用脱离式快照。"""
 
     ordinal: int
     component: str
@@ -93,35 +89,34 @@ class _ExecutionCallRecord:
 
 
 class ExecutionTraceCollector:
-    """Collect one statement's C events and build five stable stages.
+    """收集一条语句的 C 模块事件，并构建五个稳定阶段。
 
-    Records retain callback arrival order, which is completion order for
-    nested calls.  Binding completes before the final plan is returned, and
-    a leaf scan completes before its filter and projection parents.  This is
-    useful for visualizing data as it flows upward through a pull pipeline.
+    记录保留回调到达顺序，该顺序在嵌套调用中也是完成顺序。最终计划
+    返回前必须先完成绑定，叶子扫描也会早于上层过滤与投影完成，
+    因此这一顺序适合展示数据如何在拉取式流水线中向上流动。
     """
 
     def __init__(self) -> None:
-        """Create a thread-safe empty record list and one-based ordinal."""
+        """创建线程安全的空记录列表和从一开始的序号。"""
 
         self._lock = RLock()
         self._records: list[_ExecutionCallRecord] = []
         self._next_ordinal = 1
 
     def __call__(self, payload: dict[str, object]) -> None:
-        """Allow a collector to be passed directly as Runner.trace_sink."""
+        """允许收集器实例直接作为 ``Runner.trace_sink`` 传入。"""
 
         self.record(payload)
 
     def record(self, payload: Mapping[str, object]) -> None:
-        """Validate and immediately snapshot one C callback payload.
+        """验证并立即快照一条 C 回调数据。
 
         Args:
-            payload: Component, operation, state, timing, arguments, and result.
+            payload: 包含组件、操作、状态、耗时、参数和结果的映射。
 
         Raises:
-            TypeError: A payload or error field has the wrong type.
-            ValueError: Component, state, timing, or failure details are invalid.
+            TypeError: 数据或错误字段类型不正确。
+            ValueError: 组件、状态、耗时或失败详情不合法。
         """
 
         if not isinstance(payload, Mapping):
@@ -177,13 +172,13 @@ class ExecutionTraceCollector:
 
     @property
     def operation_count(self) -> int:
-        """Return the number of terminal binding, plan, and runtime calls."""
+        """返回已终止的绑定、计划与运行时调用总数。"""
 
         with self._lock:
             return len(self._records)
 
     def clear(self) -> int:
-        """Clear records, reset event numbering, and return the removed count."""
+        """清空记录、重置事件序号，并返回被移除的记录数。"""
 
         with self._lock:
             removed = len(self._records)
@@ -192,11 +187,10 @@ class ExecutionTraceCollector:
             return removed
 
     def build_stages(self) -> tuple[StageTrace, ...]:
-        """Build Binder, Plan, Optimizer, Executor, and Runtime stages.
+        """构建绑定、计划、未启用优化器、执行树和运行时阶段。
 
-        Implemented components with no call are SKIPPED, components whose
-        switch is explicitly off are DISABLED, and components with any failed
-        call are FAILED.
+        已实现但本次没有调用的组件标记为“已跳过”，存在任意失败调用的
+        组件标记为“失败”。当前版本没有优化规则，因此优化器始终标记为“未启用”。
         """
 
         with self._lock:
@@ -220,12 +214,12 @@ class ExecutionTraceCollector:
         all_records: tuple[_ExecutionCallRecord, ...],
         sequences: Mapping[int, int],
     ) -> StageTrace:
-        """Convert one implemented C component into a read-only stage.
+        """将一个已实现的 C 组件转换为只读阶段。
 
         Args:
-            component: binding, logical_plan, optimizer, executor, or runtime.
-            all_records: Every C record in completion order.
-            sequences: Mapping from callback ordinal to playback sequence.
+            component: binding、logical_plan、optimizer、executor 或 runtime。
+            all_records: 按完成顺序排列的全部 C 记录。
+            sequences: 回调序号到界面播放序号的映射。
         """
 
         records = tuple(
@@ -304,14 +298,14 @@ class ExecutionTraceCollector:
 
 
 class ExecutionTraceRouter:
-    """Route events from one shared Runner to the active query collector.
+    """将共享 Runner 产生的事件路由到当前查询收集器。
 
-    ContextVar isolates threads, tasks, and nested captures.  Events outside
-    capture are discarded, so a long-lived router does not accumulate history.
+    ``ContextVar`` 隔离线程、任务与嵌套捕获。捕获范围之外的事件直接丢弃，
+    因此长期存活的路由器不会无限积累历史。
     """
 
     def __init__(self) -> None:
-        """Create a context variable whose default has no active collector."""
+        """创建默认不含活动收集器的上下文变量。"""
 
         self._current: ContextVar[ExecutionTraceCollector | None] = ContextVar(
             f"hello_sql_execution_trace_{id(self)}",
@@ -319,7 +313,7 @@ class ExecutionTraceRouter:
         )
 
     def __call__(self, payload: dict[str, object]) -> None:
-        """Forward one C event to the active collector, if one exists."""
+        """若当前存在活动收集器，则把一条 C 事件转发给它。"""
 
         collector = self._current.get()
         if collector is not None:
@@ -327,14 +321,14 @@ class ExecutionTraceRouter:
 
     @contextmanager
     def capture(self) -> Iterator[ExecutionTraceCollector]:
-        """Create a query collector and restore the outer route on exit.
+        """创建当前查询收集器，退出时恢复外层路由。
 
         Yields:
-            An ExecutionTraceCollector dedicated to the current context.
+            当前上下文专用的 ``ExecutionTraceCollector``。
 
         Notes:
-            Inner events are not copied into an outer capture.  The finally
-            block restores routing even when binding or execution raises.
+            内层事件不会复制到外层捕获中；即使绑定或执行抛出异常，
+            ``finally`` 块也会恢复正确路由。
         """
 
         collector = ExecutionTraceCollector()
@@ -349,7 +343,7 @@ def _record_to_event(
     record: _ExecutionCallRecord,
     sequence: int,
 ) -> TraceEvent:
-    """Convert one C call into an event with inputs, outputs, errors, and metrics."""
+    """将一条 C 调用转换为包含输入、输出、错误与指标的事件。"""
 
     if record.status == "failed":
         description = "The call failed and preserved its original error."
@@ -386,7 +380,7 @@ def _stage_output(
     records: tuple[_ExecutionCallRecord, ...],
     events: tuple[TraceEvent, ...],
 ) -> dict[str, object]:
-    """Summarize operation distribution, final output, and runtime row counts."""
+    """概括操作分布、最终输出与运行时数据行数量。"""
 
     output: dict[str, object] = {
         "operation_counts": dict(
@@ -411,7 +405,7 @@ def _stage_output(
 
 
 def _finite_number(value: object) -> bool:
-    """Return whether value is a finite int or float, excluding bool."""
+    """判断值是否为排除布尔值的有限整数或浮点数。"""
 
     return (
         not isinstance(value, bool)
@@ -425,11 +419,10 @@ def _snapshot(
     active: set[int] | None = None,
     depth: int = 0,
 ) -> object:
-    """Convert an internal C value into a bounded, detached JSON snapshot.
+    """将 C 模块内部值转换为大小受控、与业务对象脱离的 JSON 快照。
 
-    Dataclasses retain type and fields, enums retain public values, sequences
-    retain at most fifty items, and recursion stops at twenty levels.  The
-    active identity set detects cycles without misclassifying shared subtrees.
+    数据类保留类型与字段，枚举保留公开值，序列最多保留五十项，递归最深二十层。
+    活动对象标识集用于检测循环引用，不会把共享子树误判为循环。
     """
 
     if isinstance(value, Enum):

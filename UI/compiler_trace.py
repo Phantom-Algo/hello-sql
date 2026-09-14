@@ -19,7 +19,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from functools import wraps
 from time import perf_counter
-from typing import Callable, TypeVar, cast
+from typing import Callable, Sequence, TypeVar, cast
 
 from compiler.lexer import Lexer
 from compiler.parser import Parser
@@ -52,6 +52,68 @@ _TRACED_METHODS = frozenset(
         "_build_parsed_statement",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _ParserRuleGuide:
+    """使用适合教学界面的文字描述一条 Parser 规则。
+
+    ``title`` 是界面显示的动作名，``purpose`` 说明具体职责，
+    ``level`` 则区分主要语法节点与游标管理细节。该类仅保存
+    展示元数据，不参与 Parser 分派，也不修改公共追踪契约。
+    """
+
+    title: str
+    purpose: str
+    level: str = "semantic"
+
+
+# 每条已追踪 Parser 规则都拥有稳定、可读的中文说明。
+# 映射放在适配器旁边便于答辩前审核教学文本，同时避免将
+# 界面职责反向写入 ``compiler/parser.py``。
+_PARSER_RULE_GUIDES: dict[str, _ParserRuleGuide] = {
+    "parse": _ParserRuleGuide("解析单条 SQL", "消费一条完整 SQL，并拒绝结束位置之后的多余内容。"),
+    "parse_script": _ParserRuleGuide("解析 SQL 脚本", "按顺序消费完整词法单元流，并保留每条语句的源码范围。"),
+    "parse_statement": _ParserRuleGuide("判断语句类型", "根据开头关键字选择 CREATE、DROP、USE、INSERT、SELECT、UPDATE 或 DELETE 文法。"),
+    "_expect_single_statement_end": _ParserRuleGuide("检查语句边界", "接受一个可选分号后要求到达 EOF，防止单语句入口隐藏额外 SQL。"),
+    "_build_parsed_statement": _ParserRuleGuide("关联原文与源码范围", "把抽象语法树、SQL 原文片段及全局行列范围组合成 ParsedStatement。"),
+    "_parse_create_statement": _ParserRuleGuide("分派 CREATE 语句", "区分 CREATE DATABASE、CREATE TABLE 与 CREATE INDEX。"),
+    "_parse_create_database_statement": _ParserRuleGuide("构建 CREATE DATABASE", "读取数据库名称并生成 CreateDatabaseStmt 节点。"),
+    "_parse_create_table_statement": _ParserRuleGuide("构建 CREATE TABLE", "读取表名与有序列定义并生成 CreateTableStmt 节点。"),
+    "_parse_create_index_statement": _ParserRuleGuide("构建 CREATE INDEX", "读取索引名、目标表和单个索引列并生成 CreateIndexStmt 节点。"),
+    "_parse_drop_statement": _ParserRuleGuide("分派 DROP 语句", "区分 DROP DATABASE、DROP TABLE 与 DROP INDEX。"),
+    "_parse_drop_database_statement": _ParserRuleGuide("构建 DROP DATABASE", "读取数据库名称并生成 DropDatabaseStmt 节点。"),
+    "_parse_drop_table_statement": _ParserRuleGuide("构建 DROP TABLE", "读取表名并生成 DropTableStmt 节点。"),
+    "_parse_drop_index_statement": _ParserRuleGuide("构建 DROP INDEX", "读取索引名并生成 DropIndexStmt 节点。"),
+    "_parse_use_database_statement": _ParserRuleGuide("构建 USE", "读取目标数据库名称并生成 UseDatabaseStmt 节点。"),
+    "_parse_insert_statement": _ParserRuleGuide("构建 INSERT", "读取目标表与 VALUES 列表并生成 InsertStmt 节点。"),
+    "_parse_insert_values": _ParserRuleGuide("读取插入值列表", "把 VALUES 中逗号分隔的 SQL 字面量转换为有序 Python 值。"),
+    "_parse_select_statement": _ParserRuleGuide("构建 SELECT", "组合投影列、FROM 数据源、有序 JOIN 子句与可选 WHERE 表达式。"),
+    "_parse_select_list": _ParserRuleGuide("解析投影列表", "识别 SELECT *，或按顺序解析普通列与限定列。"),
+    "_parse_table_reference": _ParserRuleGuide("解析表引用", "读取表名和可选的显式或隐式别名，并统一规范化名称。"),
+    "_parse_join_clauses": _ParserRuleGuide("收集 JOIN 子句", "按源码顺序读取连续的 INNER JOIN，直到不再出现 JOIN。"),
+    "_parse_join_clause": _ParserRuleGuide("构建 INNER JOIN", "读取右表及 ON 条件并生成一个 JoinClause 节点。"),
+    "_parse_optional_where": _ParserRuleGuide("检查 WHERE 子句", "存在 WHERE 时构建过滤表达式，否则保留为无过滤条件。"),
+    "_parse_expression": _ParserRuleGuide("解析逻辑表达式", "进入优先级链，使括号、比较、NOT、AND、OR 形成正确的表达式树。"),
+    "_parse_or_expression": _ParserRuleGuide("组合 OR 表达式", "把 AND 层表达式按从左到右组合为 OR 节点。"),
+    "_parse_and_expression": _ParserRuleGuide("组合 AND 表达式", "先于 OR，把 NOT 层表达式按从左到右组合为 AND 节点。"),
+    "_parse_not_expression": _ParserRuleGuide("处理 NOT", "让 NOT 优先作用于紧随其后的表达式，再交给 AND 与 OR。"),
+    "_parse_predicate": _ParserRuleGuide("构建谓词", "解析括号表达式，或将两个通用操作数组合成比较表达式。"),
+    "_parse_comparison_operator": _ParserRuleGuide("读取比较运算符", "接受 =、<>、<、<=、> 或 >= 并返回规范化运算符。"),
+    "_parse_scalar": _ParserRuleGuide("解析比较操作数", "把当前位置的词法单元转换为 Column 或 Literal 操作数。"),
+    "_parse_column_reference": _ParserRuleGuide("构建列引用", "读取“列名”或“限定符.列名”，并生成规范化 Column 节点。"),
+    "_parse_update_statement": _ParserRuleGuide("构建 UPDATE", "读取目标表、赋值列表及可选过滤条件并生成 UpdateStmt。"),
+    "_parse_assignments": _ParserRuleGuide("收集赋值项", "按源码顺序读取 SET 后逗号分隔的全部赋值。"),
+    "_parse_assignment": _ParserRuleGuide("构建一项赋值", "读取“列名 = 字面量”并生成一个 Assignment 节点。"),
+    "_parse_delete_statement": _ParserRuleGuide("构建 DELETE", "读取目标表与可选过滤条件并生成 DeleteStmt。"),
+    "_parse_column_definitions": _ParserRuleGuide("收集列定义", "按声明顺序读取 CREATE TABLE 中的全部列定义。"),
+    "_parse_column_definition": _ParserRuleGuide("构建一项列定义", "读取列名与 SQL 类型并生成 ColumnDef 节点。"),
+    "_parse_sql_type": _ParserRuleGuide("解析 SQL 类型", "把 INT、TEXT、REAL 或 BOOLEAN 映射为对应 SqlType。"),
+    "parse_value": _ParserRuleGuide("转换 SQL 字面量", "把整数、实数、字符串、TRUE 或 FALSE 原文转换为 Python 值。"),
+    "parse_identifier": _ParserRuleGuide("读取并规范化标识符", "消费一个标识符，并在进入 AST 前转为小写。", "technical"),
+    "expect": _ParserRuleGuide("校验预期词法单元", "确认当前词法单元属于语法规则期望的类别，然后消费它。", "technical"),
+    "advance": _ParserRuleGuide("推进词法单元游标", "返回当前词法单元，并将语法分析器游标移动到下一个位置。", "technical"),
+}
 
 
 class CompilerTraceMode(str, Enum):
@@ -170,6 +232,120 @@ class _ParserEventDraft:
     error_message: str | None = None
 
 
+def _parser_rule_guide(rule: str) -> _ParserRuleGuide:
+    """返回已记录 Parser 方法的稳定教学元数据。
+
+    当前语法规则均在上方显式列出。若后续新增 ``_parse_*`` 方法，
+    回退逻辑会继续生成可读事件并指出尚未分类的规则，从而保持向前兼容。
+    """
+
+    guide = _PARSER_RULE_GUIDES.get(rule)
+    if guide is not None:
+        return guide
+    readable = rule.removeprefix("_parse_").replace("_", " ")
+    return _ParserRuleGuide(
+        f"执行语法规则 {readable}",
+        "消费当前语法片段并把解析结果交给上层规则。",
+    )
+
+
+def _token_at(tokens: Sequence[Token], index: int) -> Token:
+    """安全返回 Parser 游标处的 Token，避免追踪界面产生越界异常。
+
+    合法编译流始终包含 EOF。失败规则的最终游标可能已位于流边界，
+    因此这里只对读取下标做防御性限制，不会改动 Parser 的真实游标。
+    """
+
+    if not tokens:
+        raise ValueError("Parser tracing requires a non-empty Token stream")
+    return tokens[min(max(index, 0), len(tokens) - 1)]
+
+
+def _token_label(token: Token) -> str:
+    """将一个 Token 格式化为简短且可对应源码的事件文本。
+
+    EOF 没有原始词素；其他 Token 同时显示类别与用户实际书写内容，
+    便于学生将步骤说明与 SQL 原文逐项对应。
+    """
+
+    if token.type is TokenType.EOF:
+        return "EOF"
+    return f'{token.type.name}({token.lexeme!r})'
+
+
+def _consumed_token_summary(consumed: Sequence[Token]) -> str:
+    """概括一条规则真实消费的 Token，避免事件卡片被长文本淹没。
+
+    数量不超过四个时全部显示；更长的语法片段只展示前三个与总数，
+    完整列表仍保留在可选开启的原始快照中。
+    """
+
+    visible = [token for token in consumed if token.type is not TokenType.EOF]
+    if not visible:
+        return "未消费新的源码词法单元"
+    labels = [_token_label(token) for token in visible]
+    if len(labels) <= 4:
+        return "消费 " + " → ".join(labels)
+    return "消费 " + " → ".join(labels[:3]) + f" …（共 {len(labels)} 个）"
+
+
+def _result_summary(result: object) -> str | None:
+    """从可序列化快照中提取简洁的语义结果。
+
+    AST 数据类使用 ``node_type`` 与 ``fields`` 表示，序列显示项数，
+    Parser 的原生结果显示值和类型。大型嵌套结构不写入常驻卡片。
+    """
+
+    if isinstance(result, dict) and isinstance(result.get("node_type"), str):
+        return f"生成 {result['node_type']}"
+    if isinstance(result, list):
+        return f"得到 {len(result)} 项有序结果"
+    if result is None:
+        return None
+    if isinstance(result, (str, bool, int, float)):
+        return f"得到 {result!r}（{type(result).__name__}）"
+    return None
+
+
+def _parser_event_description(
+    draft: _ParserEventDraft,
+    guide: _ParserRuleGuide,
+    tokens: Sequence[Token],
+    consumed: Sequence[Token],
+) -> str:
+    """根据规则职责、Token 流与返回结果生成具体说明。
+
+    成功文本同时说明语法职责与可观察产物；失败文本则标明出错 Token
+    和编译错误。递归深度属于实现元数据，因此不占用主说明，仍可在
+    ``metrics`` 和浏览器悬停提示中查看。
+    """
+
+    current = _token_at(tokens, draft.start_index)
+    if draft.error_message is not None:
+        code = draft.error_code or "E_SYNTAX"
+        return (
+            f"{guide.purpose}处理到 {_token_label(current)} 时失败；"
+            f"{code}：{draft.error_message}"
+        )
+
+    consumed_text = _consumed_token_summary(consumed)
+    if draft.rule == "advance":
+        return f"取出 {_token_label(current)} 并把游标从 #{draft.start_index} 推进到 #{draft.end_index}。"
+    if draft.rule == "expect":
+        return f"{_token_label(current)} 符合当前文法期望，已校验并消费。"
+    if draft.rule == "parse_identifier":
+        return f"读取标识符 {current.lexeme!r}，规范化后得到 {draft.result!r}。"
+    if draft.rule == "parse_value":
+        return (
+            f"将字面量 {current.lexeme!r} 转换为 Python 值 "
+            f"{draft.result!r}（{type(draft.result).__name__}）。"
+        )
+
+    result_text = _result_summary(draft.result)
+    suffix = f"；{result_text}" if result_text else ""
+    return f"{guide.purpose}{consumed_text}{suffix}。"
+
+
 class _TracingParser(Parser):
     """只用于观察入口、不复制任何 SQL 文法的 Parser 子类。
 
@@ -282,8 +458,8 @@ class _TracingParser(Parser):
         for draft in drafts:
             end = draft.end_index if draft.end_index is not None else draft.start_index
             failed = draft.error_message is not None
-            outcome = "失败" if failed else "成功"
             consumed = tokens[draft.start_index:end]
+            guide = _parser_rule_guide(draft.rule)
             span = _token_range_span(tokens, draft.start_index, end)
             if failed and span is None and draft.start_index < len(tokens):
                 span = _token_span(tokens[draft.start_index])
@@ -291,13 +467,22 @@ class _TracingParser(Parser):
                 TraceEvent(
                     event_id=f"parser.rule.{draft.sequence:04d}",
                     sequence=draft.sequence,
-                    action=f"执行语法规则 {draft.rule}",
-                    description=f"递归深度 {draft.depth}；规则{outcome}",
+                    action=guide.title,
+                    description=_parser_event_description(
+                        draft,
+                        guide,
+                        tokens,
+                        consumed,
+                    ),
                     input_snapshot={
                         "rule": draft.rule,
+                        "rule_title": guide.title,
+                        "detail_level": guide.level,
                         "depth": draft.depth,
                         "cursor_before": draft.start_index,
-                        "current_token": _token_snapshot(tokens[draft.start_index]),
+                        "current_token": _token_snapshot(
+                            _token_at(tokens, draft.start_index)
+                        ),
                         "arguments": draft.arguments,
                     },
                     output_snapshot={
@@ -425,6 +610,56 @@ def _single_parsed_statement(
     )
 
 
+_TOKEN_ROLES: dict[TokenType, str] = {
+    TokenType.KW_CREATE: "开始一条对象创建语句",
+    TokenType.KW_DROP: "开始一条对象删除语句",
+    TokenType.KW_SELECT: "开始一条查询并引出投影列表",
+    TokenType.KW_INSERT: "开始一条数据插入语句",
+    TokenType.KW_UPDATE: "开始一条数据更新语句",
+    TokenType.KW_DELETE: "开始一条数据删除语句",
+    TokenType.KW_FROM: "引出 SELECT 的主表数据源",
+    TokenType.KW_WHERE: "引出语句的过滤表达式",
+    TokenType.KW_JOIN: "引出一个 INNER JOIN 数据源",
+    TokenType.KW_ON: "引出 JOIN 的连接条件",
+    TokenType.KW_NOT: "表示优先于 AND 和 OR 的逻辑非",
+    TokenType.KW_AND: "连接两个优先于 OR 的布尔条件",
+    TokenType.KW_OR: "连接两个最低优先级的布尔条件",
+    TokenType.KW_TRUE: "表示将转换为 Python True 的布尔字面量",
+    TokenType.KW_FALSE: "表示将转换为 Python False 的布尔字面量",
+    TokenType.DOT: "分隔表限定符与列名，例如 u.id",
+    TokenType.COMMA: "分隔同一语法列表中相邻的项",
+    TokenType.LPAREN: "开始列表或提高内部表达式优先级",
+    TokenType.RPAREN: "结束列表或括号表达式",
+    TokenType.SEMICOLON: "标记当前 SQL 语句的显式结束",
+    TokenType.STAR: "表示 SELECT 中选取表的全部列",
+}
+
+
+def _lexer_token_description(token: Token) -> str:
+    """说明一个真实 Token 的词法类别及其对下游的作用。
+
+    说明只依据 ``TokenType`` 与原始 lexeme 生成，同时回答“识别了什么”
+    与“它为什么重要”；需要结合上下文的语法决策仍由 Parser 负责。
+    """
+
+    if token.type is TokenType.EOF:
+        return "扫描到输入末尾，追加零长度 EOF 哨兵供语法分析器检查完整性。"
+    role = _TOKEN_ROLES.get(token.type)
+    if role is not None:
+        return f"识别源码 {token.lexeme!r} 为 {token.type.name}：{role}。"
+    if token.type is TokenType.IDENTIFIER:
+        return f"识别 {token.lexeme!r} 为标识符；其表名、列名或别名职责由语法分析器根据位置确定。"
+    if token.type in {
+        TokenType.INTEGER_LITERAL,
+        TokenType.REAL_LITERAL,
+        TokenType.STRING_LITERAL,
+    }:
+        return f"识别 {token.lexeme!r} 为 {token.type.name}；语法分析器会将它转换为 Python 原生值。"
+    if token.type.name.startswith("KW_"):
+        return f"识别 {token.lexeme!r} 为 SQL 保留关键字 {token.type.name}，供语法分析器选择对应文法。"
+    return f"识别 {token.lexeme!r} 为 {token.type.name}，供语法分析器检查语法结构。"
+
+
 def _lexer_stage(sql: str, tokens: list[Token], elapsed_ms: float) -> StageTrace:
     """将成功 Lexer 输出转为逐 Token 可查看的阶段。
 
@@ -438,11 +673,7 @@ def _lexer_stage(sql: str, tokens: list[Token], elapsed_ms: float) -> StageTrace
             f"lexer.token.{index:04d}",
             index,
             f"识别 {token.type.name}",
-            (
-                "追加 EOF 哨兵"
-                if token.type is TokenType.EOF
-                else f"将 {token.lexeme!r} 分类为 {token.type.name}"
-            ),
+            _lexer_token_description(token),
             {
                 "lexeme": token.lexeme,
                 "start_offset": token.start_offset,
@@ -459,7 +690,7 @@ def _lexer_stage(sql: str, tokens: list[Token], elapsed_ms: float) -> StageTrace
         "a.lexer", _LEXER_SEQUENCE, TraceOwner.A, "Lexer",
         "从左到右扫描 SQL，生成带位置和偏移的 Token 流。",
         TraceStatus.SUCCESS,
-        "str", "list[Token] ending with EOF",
+        "SQL 原始文本", "按源码顺序排列、以 EOF 结束的 Token 流",
         {"sql": sql, "character_count": len(sql)}, events,
         {"token_count": len(tokens), "tokens": [_token_snapshot(token) for token in tokens]},
         {"token_count": len(tokens), "source_token_count": len(tokens) - 1},
@@ -519,7 +750,7 @@ def _parser_stage(
         "a.parser", _PARSER_SEQUENCE, TraceOwner.A, "Parser",
         "通过递归下降规则消费 Token，并按优先级构建语句结构。",
         TraceStatus.FAILED if error else TraceStatus.SUCCESS,
-        "Sequence[Token] ending with EOF", "Statement or Script",
+        "Lexer 生成的完整 Token 流", "单条 Statement 或带原文范围的 Script AST",
         {"sql": sql, "tokens": [_token_snapshot(token) for token in tokens]}, events,
         {
             "statement_count": len(statements),
@@ -558,12 +789,65 @@ def _ast_stage(statements: Script) -> StageTrace:
     return StageTrace(
         "a.ast", _AST_SEQUENCE, TraceOwner.A, "AST",
         "展示 Parser 实际构建的语句、索引、表、列和表达式节点树。",
-        TraceStatus.SUCCESS, "Statement or Script", "JSON-compatible AST forest",
+        TraceStatus.SUCCESS, "Parser 生成的 Statement / Script", "可视化 AST 节点树",
         {"statement_count": len(statements)}, tuple(events),
         {"statement_count": len(statements), "trees": trees},
         {"statement_count": len(statements), "node_count": len(events)},
         _statements_span(statements), elapsed,
     )
+
+
+def _ast_node_description(value: object, statement_index: int) -> str:
+    """说明一个 AST 数据类节点的真实业务含义。
+
+    文本使用节点的强类型字段，而不是只展示遍历路径。这样卡片能直接
+    说明 Parser 构建了什么，完整路径与快照则继续供联动和原始数据检查使用。
+    """
+
+    kind = type(value).__name__
+    if kind == "SelectStmt":
+        columns = getattr(value, "columns", None)
+        projection = "全部列" if columns is None else f"{len(columns)} 个投影列"
+        table = getattr(getattr(value, "table", None), "name", "?")
+        joins = len(getattr(value, "joins", ()))
+        where = "包含 WHERE 条件" if getattr(value, "where", None) is not None else "无 WHERE 条件"
+        return f"第 {statement_index} 条语句的查询根节点：从 {table} 读取{projection}，包含 {joins} 个 JOIN，{where}。"
+    if kind == "TableRef":
+        name = getattr(value, "name", "?")
+        alias = getattr(value, "alias", None)
+        return f"数据源表 {name}" + (f" 使用别名 {alias}。" if alias else " 未使用别名。")
+    if kind == "Column":
+        name = getattr(value, "name", "?")
+        qualifier = getattr(value, "qualifier", None)
+        qualified = f"{qualifier}.{name}" if qualifier else name
+        return f"列引用 {qualified}；限定符用于 JOIN 或多表场景的名称绑定。"
+    if kind == "Literal":
+        literal = getattr(value, "value", None)
+        return f"已将 SQL 字面量转换为 Python 值 {literal!r}（{type(literal).__name__}）。"
+    if kind == "Cmp":
+        return f"比较节点使用 {getattr(value, 'op', '?')} 运算符连接左右操作数。"
+    if kind in {"And", "Or"}:
+        return f"逻辑 {kind.upper()} 节点按语法分析优先级连接左右条件子树。"
+    if kind == "Not":
+        return "逻辑 NOT 节点优先对其操作数子树取反。"
+    if kind == "JoinClause":
+        right = getattr(getattr(value, "right", None), "name", "?")
+        return f"INNER JOIN 节点将右表 {right} 与主表按 ON 表达式连接。"
+    if kind == "CreateTableStmt":
+        return f"建表语句根节点：创建表 {getattr(value, 'table', '?')}，定义 {len(getattr(value, 'columns', ()))} 列。"
+    if kind == "ColumnDef":
+        sql_type = getattr(getattr(value, "type", None), "value", "?")
+        return f"列定义 {getattr(value, 'name', '?')} 使用 {sql_type} 类型。"
+    if kind == "CreateIndexStmt":
+        return (
+            f"创建索引 {getattr(value, 'index_name', '?')}，目标为 "
+            f"{getattr(value, 'table', '?')}.{getattr(value, 'column', '?')}。"
+        )
+    if kind == "DropIndexStmt":
+        return f"删除索引 {getattr(value, 'index_name', '?')}。"
+    if kind.endswith("Stmt"):
+        return f"第 {statement_index} 条语句的 {kind} AST 根节点，保存后续绑定与执行所需字段。"
+    return f"{kind} 保存语法分析器已确认的语法结构，并作为父节点的有类型子节点。"
 
 
 def _walk_ast(
@@ -586,7 +870,7 @@ def _walk_ast(
         events.append(
             TraceEvent(
                 f"ast.node.{sequence:04d}", sequence, f"生成 {type(value).__name__} 节点",
-                f"语句 {statement_index} 的 AST 路径：{path}",
+                _ast_node_description(value, statement_index),
                 {"path": path, "statement_index": statement_index},
                 {"node": _snapshot(value)}, {"field_count": len(fields(value))},
                 root_span if is_root else None,
@@ -623,7 +907,12 @@ def _source_span_stage(sql: str, statements: Script) -> StageTrace:
     events = tuple(
         TraceEvent(
             f"source-span.statement.{index:04d}", index, f"确定第 {index} 条语句范围",
-            "SourceSpan 使用一基行列与包含起止字符的闭区间。",
+            (
+                f"该语句原文位于第 {parsed.span.start_line} 行第 "
+                f"{parsed.span.start_col} 列至第 {parsed.span.end_line} 行第 "
+                f"{parsed.span.end_col} 列，共 {len(parsed.sql)} 个字符；"
+                "该范围用于错误定位与界面点击联动。"
+            ),
             {"full_source_character_count": len(sql)},
             {
                 "statement_index": index,
@@ -646,7 +935,7 @@ def _source_span_stage(sql: str, statements: Script) -> StageTrace:
     return StageTrace(
         "a.source_span", _SPAN_SEQUENCE, TraceOwner.A, "SourceSpan",
         "将每条 AST 映射回完整 SQL 脚本中的原文与全局行列。",
-        TraceStatus.SUCCESS, "Script", "statement sql + inclusive SourceSpan",
+        TraceStatus.SUCCESS, "带原文的 ParsedStatement 列表", "每条语句的 SQL 原文与全局 SourceSpan",
         {"full_source": sql, "statement_count": len(statements)}, events,
         {"statements": output}, {"statement_count": len(statements)},
         _statements_span(statements), elapsed,

@@ -88,10 +88,10 @@ def test_viewer_serves_packaged_page_and_filtered_trace_api(tmp_path):
     必须显式将该状态设为 ``display: none``，避免 ``.empty-state``
     的 grid 样式覆盖浏览器默认隐藏规则并把真实详情挤到下方。
 
-    新版首屏默认展示 NODES 树，并将原始 JSON 放进统一的
+    新版首屏默认展示节点树，并将原始 JSON 放进统一的
     ``debug-only`` 区域。顶部 ``debug-toggle`` 默认处于关闭状态，用户
-    需要时才显示快照；节点、Token、页的摘要和关联关系则始终保留。桌面
-    端 Pipeline 使用独立纵向滚动，避免十四个阶段撑长整页形成大片留白。
+    需要时才显示快照；节点、词法单元、页的摘要和关联关系则始终保留。桌面
+    端处理流水线使用独立纵向滚动，避免十四个阶段撑长整页形成大片留白。
     """
 
     inspector = _inspector_with_trace(tmp_path)
@@ -101,7 +101,25 @@ def test_viewer_serves_packaged_page_and_filtered_trace_api(tmp_path):
         with urlopen(root, timeout=3) as response:
             page = response.read().decode("utf-8")
         assert "HELLO-SQL" in page
-        assert "Processing stages" in page
+        assert "处理阶段" in page
+        assert "查询流程检查器" in page
+        assert "原始数据" in page
+        assert "AST / Logical Plan / Executor Tree" in page
+        assert "Lexer 结果" in page
+        assert "Buffer Cache / Pager / Storage Engine" in page
+        for obsolete_english_label in (
+            "QUERY FLOW INSPECTOR",
+            "RAW DATA",
+            "Processing stages",
+            "FLOW EXPLORER",
+            "Query structure",
+            "SOURCE LINK",
+            "RESET LINK",
+            "TREE VISUALIZER",
+            "PHYSICAL PAGES",
+            "PAGE OPERATIONS",
+        ):
+            assert obsolete_english_label not in page
         assert 'data-view="nodes"' in page
         assert 'data-view="tokens"' in page
         assert 'data-view="pages"' in page
@@ -116,6 +134,9 @@ def test_viewer_serves_packaged_page_and_filtered_trace_api(tmp_path):
         assert 'id="node-facts"' in page
         assert 'id="token-facts"' in page
         assert 'id="page-facts"' in page
+        assert 'id="event-toolbar"' in page
+        assert 'id="technical-events-toggle"' in page
+        assert "展开底层步骤" in page
         assert page.count('class="debug-only"') == 3
         assert page.count("debug-only") == 4
         assert 'class="raw-data-panel debug-only"' in page
@@ -129,6 +150,8 @@ def test_viewer_serves_packaged_page_and_filtered_trace_api(tmp_path):
         assert "scrollbar-gutter: stable;" in stylesheet
         assert ".tree-children::before" in stylesheet
         assert ".tree-node" in stylesheet
+        assert ".event-toolbar[hidden] { display: none; }" in stylesheet
+        assert ".event-technical" in stylesheet
         with urlopen(f"{root}app.js", timeout=3) as response:
             script = response.read().decode("utf-8")
         assert "function buildNodeForest(nodes)" in script
@@ -138,6 +161,18 @@ def test_viewer_serves_packaged_page_and_filtered_trace_api(tmp_path):
         assert "function setDebugVisibility(enabled)" in script
         assert "function toggleDebugVisibility()" in script
         assert "function renderFacts(containerId, facts)" in script
+        assert "function statusText(status)" in script
+        assert "function stageDisplayName(stage)" in script
+        assert '"a.lexer": "Lexer"' in script
+        assert '"a.parser": "Parser"' in script
+        assert '"a.source_span": "SourceSpan"' in script
+        assert '"c.logical_plan": "Logical Plan"' in script
+        assert "function eventActionText(action)" in script
+        assert 'SUCCESS: "成功"' in script
+        assert '"runtime.select.execute": "执行查询"' in script
+        assert "function eventDetailLevel(event)" in script
+        assert "function renderStageEvents(stage)" in script
+        assert "function toggleTechnicalEvents()" in script
         assert "setDebugVisibility(false)" in script
         assert 'node.kind === "CreateIndexStmt"' in script
         assert 'node.kind === "DropIndexStmt"' in script
