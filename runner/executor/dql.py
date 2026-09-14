@@ -1,9 +1,10 @@
 """DQL 执行器：把 Projection/Filter/Join/Scan 计划树转换为拉取式行流水线。
 
-- SeqScanExecutor：读取 Storage 的整表行；
+- SeqScanExecutor：读取 Storage 的整表行，按 source_indexes 投影到声明的列；
 - FilterExecutor：按谓词过滤，命中行原样下传；
 - NestedLoopJoinExecutor：拼接左右行并按 ON 谓词筛选；
 - ProjectionExecutor：按投影列重排行值；
+- EmptyExecutor：恒零行，不访问 Storage；
 - SelectExecutor：把行流水线物化为 QueryResult。
 """
 
@@ -12,13 +13,16 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from contracts.errors import E_COLUMN_NOT_FOUND, SqlError
 from contracts.result import QueryResult
 from runner.executor.base import RowExecutor, StatementExecutor
 from runner.executor.context import ExecutionContext
 from runner.executor.row import ExecRow
 from runner.logical_plan.base import LogicalPlan, LogicalSchema
+from runner.logical_plan.builder import DescribeTable
 from runner.logical_plan.expressions import BoundColumnRef, BoundExpr, eval_expr
 from runner.logical_plan.plans import (
+    LogicalEmpty,
     LogicalFilter,
     LogicalJoin,
     LogicalProjection,
@@ -28,9 +32,38 @@ from runner.logical_plan.plans import (
 
 @dataclass(frozen=True, slots=True)
 class SeqScanExecutor(RowExecutor):
-    """顺序扫描一张表，输出 Storage 中的完整行。"""
+    """顺序扫描一张表，按 source_indexes 从 Storage 的整行中取出声明输出列。
+
+    source_indexes[i] 是第 i 个输出列在 storage.scan() 行元组中的位置，
+    是执行期下标，与 LogicalColumn.index（裁剪后元组中的位置）是两套下标。
+    未裁剪时它是 (0, 1, ..., n-1)，输出与整行逐值相同。
+
+    例如：
+    users(id, name, age, gender)，但是裁剪后只剩下 name 与 gender
+    但是由于 storage.scan() 返回的是整行数据，因此需要通过 source_indexes 将原始数据映射为在执行器树中要输入的数据
+    在本例子中，source_indexes 应该为 (1, 3)，表示第 0 个位置的数据映射到原始数据的第 1 个，即 name，gender 同理。
+    """
 
     table: str
+    schema: LogicalSchema
+    source_indexes: tuple[int, ...]
+
+    @property
+    def output_schema(self) -> LogicalSchema:
+        return self.schema
+
+    def rows(self, context: ExecutionContext) -> Iterator[ExecRow]:
+        for row_id, values in context.storage.scan(self.table):
+            yield ExecRow(
+                row_id=row_id,
+                values=tuple(values[index] for index in self.source_indexes),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class EmptyExecutor(RowExecutor):
+    """恒零行、零副作用：不访问 Storage，只承载输出 Schema 供表头使用。"""
+
     schema: LogicalSchema
 
     @property
@@ -38,9 +71,7 @@ class SeqScanExecutor(RowExecutor):
         return self.schema
 
     def rows(self, context: ExecutionContext) -> Iterator[ExecRow]:
-        # Storage.scan 的 values 顺序与 LogicalScan.schema.columns 顺序一致
-        for row_id, values in context.storage.scan(self.table):
-            yield ExecRow(row_id=row_id, values=values)
+        return iter(())
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,30 +165,41 @@ class SelectExecutor(StatementExecutor):
 # ---------- 构建 ----------
 
 
-def build_row_executor(plan: LogicalPlan) -> RowExecutor:
-    """把逻辑计划递归转换为行执行器；UPDATE/DELETE 也用它构建 Scan/Filter child。"""
+def build_row_executor(
+    plan: LogicalPlan,
+    describe_table: DescribeTable,
+) -> RowExecutor:
+    """把逻辑计划递归转换为行执行器；UPDATE/DELETE 也用它构建 Scan/Filter child。
+
+    describe_table 用于在构建期取表完整列序，定位裁剪后 Scan 的输出列。
+    """
     match plan:
         case LogicalScan():
             return SeqScanExecutor(
                 table=plan.table,
                 schema=plan.output_schema,
+                source_indexes=_scan_source_indexes(
+                    plan.table, plan.output_schema, describe_table
+                ),
             )
+        case LogicalEmpty():
+            return EmptyExecutor(schema=plan.output_schema)
         case LogicalFilter():
             return FilterExecutor(
                 predicate=plan.predicate,
-                child=build_row_executor(plan.child),
+                child=build_row_executor(plan.child, describe_table),
             )
         case LogicalJoin():
             return NestedLoopJoinExecutor(
-                left=build_row_executor(plan.left),
-                right=build_row_executor(plan.right),
+                left=build_row_executor(plan.left, describe_table),
+                right=build_row_executor(plan.right, describe_table),
                 on=plan.on,
                 schema=plan.output_schema,
             )
         case LogicalProjection():
             return ProjectionExecutor(
                 columns=plan.columns,
-                child=build_row_executor(plan.child),
+                child=build_row_executor(plan.child, describe_table),
                 schema=plan.output_schema,
             )
         case _:
@@ -166,6 +208,32 @@ def build_row_executor(plan: LogicalPlan) -> RowExecutor:
             )
 
 
-def build_select_executor(plan: LogicalProjection) -> SelectExecutor:
+def build_select_executor(
+    plan: LogicalProjection,
+    describe_table: DescribeTable,
+) -> SelectExecutor:
     """SELECT 语句级执行器的构建入口。"""
-    return SelectExecutor(root=build_row_executor(plan))
+    return SelectExecutor(root=build_row_executor(plan, describe_table))
+
+
+def _scan_source_indexes(
+    table: str,
+    schema: LogicalSchema,
+    describe_table: DescribeTable,
+) -> tuple[int, ...]:
+    """按表完整列序定位每个输出列在 storage.scan() 行元组中的位置。
+
+    裁剪后的 Scan.schema 是表 Schema 的子序列，两者的列名一致，因此按列名反查
+    即可；列名在表内唯一（存储层拒绝重名列）。
+    """
+    positions = {
+        column.name: index
+        for index, column in enumerate(describe_table(table).columns)
+    }
+    try:
+        return tuple(positions[column.name] for column in schema.columns)
+    except KeyError as missing:
+        raise SqlError(
+            E_COLUMN_NOT_FOUND,
+            f"column not found in table {table}: {missing.args[0]}",
+        ) from None

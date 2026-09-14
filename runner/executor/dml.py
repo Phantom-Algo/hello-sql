@@ -13,6 +13,7 @@ from contracts.result import QueryResult
 from runner.executor.base import RowExecutor, StatementExecutor
 from runner.executor.context import ExecutionContext
 from runner.executor.dql import build_row_executor
+from runner.logical_plan.builder import DescribeTable
 from runner.logical_plan.expressions import BoundAssignment, BoundLiteral
 from runner.logical_plan.plans import LogicalDelete, LogicalInsert, LogicalUpdate
 
@@ -83,7 +84,10 @@ class DeleteExecutor(StatementExecutor):
 DmlPlan: TypeAlias = LogicalInsert | LogicalUpdate | LogicalDelete
 
 
-def build_dml_executor(plan: DmlPlan) -> StatementExecutor:
+def build_dml_executor(
+    plan: DmlPlan,
+    describe_table: DescribeTable,
+) -> StatementExecutor:
     """把 DML 逻辑计划转换为语句级执行器。"""
     match plan:
         case LogicalInsert():
@@ -95,12 +99,12 @@ def build_dml_executor(plan: DmlPlan) -> StatementExecutor:
             return UpdateExecutor(
                 table=plan.table,
                 assignments=plan.assignments,
-                child=build_row_executor(plan.child),
+                child=build_row_executor(plan.child, describe_table),
             )
         case LogicalDelete():
             return DeleteExecutor(
                 table=plan.table,
-                child=build_row_executor(plan.child),
+                child=build_row_executor(plan.child, describe_table),
             )
         case _:
             assert_never(plan)

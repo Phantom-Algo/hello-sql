@@ -172,13 +172,16 @@ class RunnerTest(unittest.TestCase):
         runner.execute("USE shop;")
         insert_result = runner.execute("INSERT")
         select_result = runner.execute("SELECT")
+        runner.execute("SELECT")
 
         self.assertEqual(runner.current_database, "shop")
         self.assertEqual(server.storages["main"].describe_calls, [])
         self.assertEqual(server.storages["main"].rows["items"], [])
+        # INSERT 绑定 1 次；两次 SELECT 各在绑定期 1 次（绑定路径不经过该缓存），
+        # 执行器构建期只在第一次反查完整列序，第二次命中的是 (库, 表) 缓存
         self.assertEqual(
             server.storages["shop"].describe_calls,
-            ["items", "items"],
+            ["items", "items", "items", "items"],
         )
         self.assertEqual(server.storages["shop"].rows["items"], [(1, (7,))])
         self.assertEqual(insert_result.affected_rows, 1)

@@ -18,6 +18,7 @@ from runner.executor.dml import (
     build_dml_executor,
 )
 from runner.executor.dql import (
+    EmptyExecutor,
     FilterExecutor,
     NestedLoopJoinExecutor,
     ProjectionExecutor,
@@ -36,6 +37,7 @@ __all__ = [
     "ExecutorTreeBuilder",
     # DQL
     "SeqScanExecutor",
+    "EmptyExecutor",
     "FilterExecutor",
     "NestedLoopJoinExecutor",
     "ProjectionExecutor",
