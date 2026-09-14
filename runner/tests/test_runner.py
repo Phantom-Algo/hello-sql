@@ -225,7 +225,12 @@ class RunnerTest(unittest.TestCase):
             QueryResult(affected_rows=2),
         ]
 
-        def execute_script(sql: str, *, stop_on_error: bool = True) -> ScriptResult:
+        seen_physical: list[str] = []
+
+        def execute_script(
+            sql: str, *, stop_on_error: bool = True, physical: str = "auto"
+        ) -> ScriptResult:
+            seen_physical.append(physical)
             result = results.pop(0)
             if isinstance(result, SqlError):
                 statement = StatementResult(
@@ -247,12 +252,14 @@ class RunnerTest(unittest.TestCase):
             patch("builtins.input", side_effect=["bad", "select", "update", EOFError]),
             redirect_stdout(output),
         ):
-            runner.repl()
+            runner.repl(physical="seq")
 
         self.assertEqual(
             output.getvalue().splitlines(),
             ["[E_TEST] expected error", "id", "1", "2 row(s) affected"],
         )
+        # 会话初值必须逐条透传到执行入口，否则强制模式只会改提示符
+        self.assertEqual(seen_physical, ["seq", "seq", "seq"])
 
 
 if __name__ == "__main__":

@@ -268,6 +268,7 @@ HELP_ITEMS = (
     ("/describe 表名", "查看表结构"),
     ("/file 路径", "按 UTF-8 执行 SQL 文件"),
     ("/stop-on-error on|off", "设置脚本遇错停止或继续"),
+    ("/physical [auto|seq|index]", "查看或切换物理访问模式"),
     ("/inspect [ALL|A|B|C]", "查看最近 SQL 的全链路或指定模块"),
     ("/clear", "清理屏幕"),
     ("/quit、quit、exit", "退出程序"),

@@ -23,6 +23,7 @@ from pygments.lexers.sql import SqlLexer
 
 from contracts.errors import E_BAD_ARG, SqlError
 from contracts.result import QueryResult, ScriptResult
+from runner.physical import PHYSICAL_MODES, PhysicalMode, validate_physical_mode
 from runner.terminal.render import HELP_ITEMS, TerminalRenderer, safe_text
 from UI.inspection import (
     InspectionModule,
@@ -41,7 +42,7 @@ KEYWORDS = (
 )
 COMMANDS = (
     "/help", "/databases", "/tables", "/describe", "/file",
-    "/stop-on-error", "/inspect", "/clear", "/quit",
+    "/stop-on-error", "/physical", "/inspect", "/clear", "/quit",
 )
 STYLE = Style.from_dict({
     "prompt": "bold #64d9c3",
@@ -66,8 +67,9 @@ class SqlCompleter(Completer):
     def get_completions(self, document, complete_event):
         """根据光标前单词返回不重复的候选项。
 
-        ``/inspect `` 之后只提供 ALL/A/B/C；USE 和表名上下文从
-        Runner 动态读取。元数据读取失败会被隔离，不会打断用户编辑。
+        ``/inspect `` 之后只提供 ALL/A/B/C，``/physical `` 之后只提供三个
+        物理模式；USE 和表名上下文从 Runner 动态读取。元数据读取失败会被
+        隔离，不会打断用户编辑。
         """
 
         before = document.text_before_cursor
@@ -77,6 +79,8 @@ class SqlCompleter(Completer):
         try:
             if before.lstrip().lower().startswith("/inspect "):
                 candidates = [item.value for item in InspectionModule]
+            elif before.lstrip().lower().startswith("/physical "):
+                candidates = list(PHYSICAL_MODES)
             elif prefix.endswith("USE") or prefix.endswith("DATABASE"):
                 candidates = self.runner.list_databases()
             elif prefix.endswith(("FROM", "INTO", "UPDATE", "TABLE", "/DESCRIBE")):
@@ -97,6 +101,7 @@ class TerminalSession:
     def __init__(
         self, runner: Runner, *, data_dir: Path | None = None,
         plain: bool = False, history: bool = True, stop_on_error: bool = True,
+        physical: PhysicalMode = "auto",
     ) -> None:
         """初始化交互状态并根据 TTY/用户选项决定渲染模式。
 
@@ -106,6 +111,10 @@ class TerminalSession:
             plain: 是否强制纯文本模式。
             history: 是否使用持久输入历史。
             stop_on_error: 多语句脚本遇错时是否停止。
+            physical: 物理访问模式，作为会话初值；交互中可用 ``/physical`` 改。
+
+        Raises:
+            SqlError: physical 取值非法时抛 E_BAD_ARG。
         """
 
         self.runner = runner
@@ -113,7 +122,20 @@ class TerminalSession:
         self.interactive = not plain and sys.stdin.isatty() and sys.stdout.isatty()
         self.history_enabled = history
         self.stop_on_error = stop_on_error
+        self.physical = validate_physical_mode(physical)
         self.renderer = TerminalRenderer()
+
+    def _prompt_label(self, separator: str) -> str:
+        """构造提示符文本；强制物理模式时附带模式标记。
+
+        模式不是 auto 时把它显示在提示符里，避免用户忘记当前处于强制模式，
+        进而把 E_INDEX_NOT_FOUND 之类的预期错误当成故障。交互会话沿用
+        ``main ❯ ``、纯文本终端沿用 ``main> `` 的空格习惯，只在中间插入标记。
+        """
+
+        marker = "" if self.physical == "auto" else f" [{self.physical}]"
+        prefix = f"{self.runner.current_database}{marker}"
+        return f"{prefix} {separator} " if separator == "❯" else f"{prefix}{separator} "
 
     def _make_prompt(self) -> PromptSession:
         """构建带历史、SQL 高亮、补全和多行键位的提示器。"""
@@ -220,6 +242,21 @@ class TerminalSession:
         else:
             print(format_inspection_text(snapshot))
 
+    def _set_physical(self, value: str | None) -> None:
+        """显示或切换会话的物理访问模式。
+
+        不带参数时只读显示当前模式；带参数时先校验再设置，非法取值抛
+        E_BAD_ARG。强制模式只影响选路：谓词无法翻译成索引请求时由 C 抛
+        E_BAD_ARG，目标列没有索引时由 B 抛 E_INDEX_NOT_FOUND，两条路径都
+        不会静默退化为顺序扫描。
+        """
+
+        if value is None:
+            self._notice(f"physical = {self.physical}")
+            return
+        self.physical = validate_physical_mode(value.lower())
+        self._notice(f"physical = {self.physical}")
+
     def _command(self, sql: str) -> tuple[bool, bool]:
         """返回（是否为界面命令，命令执行是否失败）。"""
         if not sql.startswith("/"):
@@ -232,6 +269,8 @@ class TerminalSession:
             return False, False
         command = parts[0].lower()
         if command == "/inspect":
+            valid_arity = len(parts) in (1, 2)
+        elif command == "/physical":
             valid_arity = len(parts) in (1, 2)
         else:
             expected = 2 if command in ("/describe", "/file", "/stop-on-error") else 1
@@ -258,6 +297,7 @@ class TerminalSession:
             result = self.runner.execute_file(
                 Path(parts[1]).expanduser(),
                 stop_on_error=self.stop_on_error,
+                physical=self.physical,
             )
             return True, self._script_result(result)
         elif command == "/inspect":
@@ -266,6 +306,8 @@ class TerminalSession:
             except ValueError:
                 raise SqlError(E_BAD_ARG, "/inspect 只接受 A、B、C 或 ALL") from None
             self._inspect(module)
+        elif command == "/physical":
+            self._set_physical(parts[1] if len(parts) == 2 else None)
         elif command == "/stop-on-error":
             value = parts[1].lower()
             if value not in ("on", "off"):
@@ -283,7 +325,11 @@ class TerminalSession:
         recognized, failed = self._command(sql)
         if recognized:
             return failed
-        result = self.runner.execute_script(sql, stop_on_error=self.stop_on_error)
+        result = self.runner.execute_script(
+            sql,
+            stop_on_error=self.stop_on_error,
+            physical=self.physical,
+        )
         return self._script_result(result)
 
     def run(self) -> int:
@@ -301,9 +347,9 @@ class TerminalSession:
         while True:
             try:
                 if prompt is not None:
-                    sql = prompt.prompt([("class:prompt", f"{self.runner.current_database} ❯ ")])
+                    sql = prompt.prompt([("class:prompt", self._prompt_label("❯"))])
                 else:
-                    sql = input(f"{self.runner.current_database}> " if sys.stdin.isatty() else "")
+                    sql = input(self._prompt_label(">") if sys.stdin.isatty() else "")
             except EOFError:
                 return int(failed)
             except KeyboardInterrupt:

@@ -350,8 +350,13 @@ class Runner:
     def repl(
         self, *, data_dir: Path | None = None, plain: bool = False,
         history: bool = True, stop_on_error: bool = True,
+        physical: PhysicalMode = "auto",
     ) -> int:
-        """进入终端会话；非 TTY 自动使用纯文本，返回会话退出码。"""
+        """进入终端会话；非 TTY 自动使用纯文本，返回会话退出码。
+
+        physical 是会话初值，交互中可用 ``/physical`` 覆盖；非法取值在进入
+        终端之前就以 E_BAD_ARG 拒绝，避免整场会话静默跑在别的模式上。
+        """
         from runner.terminal.session import TerminalSession
 
         return TerminalSession(
@@ -360,6 +365,7 @@ class Runner:
             plain=plain,
             history=history,
             stop_on_error=stop_on_error,
+            physical=physical,
         ).run()
 
     @staticmethod
