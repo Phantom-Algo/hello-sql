@@ -87,6 +87,11 @@ def test_viewer_serves_packaged_page_and_filtered_trace_api(tmp_path):
     JavaScript 选中阶段后会为 ``empty-detail`` 设置 ``hidden``；CSS
     必须显式将该状态设为 ``display: none``，避免 ``.empty-state``
     的 grid 样式覆盖浏览器默认隐藏规则并把真实详情挤到下方。
+
+    新版首屏默认展示 NODES 树，并将原始 JSON 放进统一的
+    ``debug-only`` 区域。顶部 ``debug-toggle`` 默认处于关闭状态，用户
+    需要时才显示快照；节点、Token、页的摘要和关联关系则始终保留。桌面
+    端 Pipeline 使用独立纵向滚动，避免十四个阶段撑长整页形成大片留白。
     """
 
     inspector = _inspector_with_trace(tmp_path)
@@ -102,15 +107,38 @@ def test_viewer_serves_packaged_page_and_filtered_trace_api(tmp_path):
         assert 'data-view="pages"' in page
         assert 'id="node-stage-tabs"' in page
         assert 'id="node-tree"' in page
+        assert '<div id="stage-pane" class="entity-pane" hidden>' in page
+        assert '<div id="nodes-pane" class="entity-pane">' in page
+        assert 'id="node-inspector"' in page
+        assert 'id="token-inspector"' in page
+        assert 'id="page-inspector"' in page
+        assert 'id="debug-toggle"' in page
+        assert 'id="node-facts"' in page
+        assert 'id="token-facts"' in page
+        assert 'id="page-facts"' in page
+        assert page.count('class="debug-only"') == 3
+        assert page.count("debug-only") == 4
+        assert 'class="raw-data-panel debug-only"' in page
         with urlopen(f"{root}app.css", timeout=3) as response:
             stylesheet = response.read().decode("utf-8")
         assert ".empty-state[hidden] { display: none; }" in stylesheet
+        assert ".debug-only { display: none !important; }" in stylesheet
+        assert "body.show-debug .debug-only { display: block !important; }" in stylesheet
+        assert "height: clamp(580px, 68vh, 760px);" in stylesheet
+        assert "overflow-y: auto;" in stylesheet
+        assert "scrollbar-gutter: stable;" in stylesheet
         assert ".tree-children::before" in stylesheet
         assert ".tree-node" in stylesheet
         with urlopen(f"{root}app.js", timeout=3) as response:
             script = response.read().decode("utf-8")
         assert "function buildNodeForest(nodes)" in script
         assert "function nodeTreeBranch(" in script
+        assert 'view: "nodes"' in script
+        assert 'state.view = "nodes"' in script
+        assert "function setDebugVisibility(enabled)" in script
+        assert "function toggleDebugVisibility()" in script
+        assert "function renderFacts(containerId, facts)" in script
+        assert "setDebugVisibility(false)" in script
         assert 'node.kind === "CreateIndexStmt"' in script
         assert 'node.kind === "DropIndexStmt"' in script
 

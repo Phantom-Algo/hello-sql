@@ -11,12 +11,13 @@
 const state = {
   module: "ALL",
   trace: null,
-  view: "stage",
+  view: "nodes",
   selectedStageId: null,
   nodeStageId: null,
   selectedNodeId: null,
   selectedTokenId: null,
   selectedPageId: null,
+  showDebug: false,
 };
 
 /**
@@ -37,6 +38,55 @@ const byId = (id) => document.getElementById(id);
 /** 将任意快照值格式化为带缩进的稳定 JSON 文本。 */
 function pretty(value) {
   return JSON.stringify(value ?? {}, null, 2);
+}
+
+/**
+ * 将原始 JSON 区域统一切换为显示或隐藏状态。
+ *
+ * 页面默认只展示阶段产物和结构化摘要；开启后通过 body 状态类显示所有
+ * ``debug-only`` 区域。按钮的文字、标题和 aria-pressed 会同步更新，
+ * 因此鼠标、键盘和辅助技术得到相同的开关状态。
+ */
+function setDebugVisibility(enabled) {
+  state.showDebug = Boolean(enabled);
+  document.body.classList.toggle("show-debug", state.showDebug);
+  const button = byId("debug-toggle");
+  button.classList.toggle("active", state.showDebug);
+  button.setAttribute("aria-pressed", String(state.showDebug));
+  button.querySelector("b").textContent = state.showDebug ? "ON" : "OFF";
+  button.title = state.showDebug ? "隐藏原始 JSON 数据" : "显示原始 JSON 数据";
+}
+
+/**
+ * 响应顶部 RAW DATA 按钮，反转本次页面会话的调试数据可见状态。
+ *
+ * 该操作只改变浏览器中的样式，不请求新追踪、不重新执行 SQL，也不会
+ * 修改 QueryTrace；切换 A/B/C 模块后仍保持用户当前选择。
+ */
+function toggleDebugVisibility() {
+  setDebugVisibility(!state.showDebug);
+}
+
+/**
+ * 将对象的关键标量字段渲染为精简信息卡，而不是要求用户阅读 JSON。
+ *
+ * ``facts`` 使用 ``[标签, 值]`` 二元组；空值会被过滤，数字 0 和布尔值
+ * 会正常显示。所有内容均通过 textContent 写入，避免追踪内容被当作 HTML。
+ */
+function renderFacts(containerId, facts) {
+  const cards = facts
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([label, value]) => {
+      const card = document.createElement("div");
+      card.className = "fact-item";
+      const name = document.createElement("span");
+      name.textContent = label;
+      const content = document.createElement("strong");
+      content.textContent = String(value);
+      card.append(name, content);
+      return card;
+    });
+  byId(containerId).replaceChildren(...cards);
 }
 
 /** 根据 TraceStatus 返回 CSS 状态类，未知值使用普通样式。 */
@@ -98,7 +148,8 @@ function renderSqlSource(linkage) {
 
 /** 更新查询元数据、SQL Token 原文以及联动对象计数。 */
 function renderHeader(trace) {
-  byId("query-number").textContent = `QUERY #${String(trace.query_number).padStart(4, "0")}  ·  ${trace.trace_id}`;
+  byId("query-number").textContent = `QUERY #${String(trace.query_number).padStart(4, "0")}`;
+  byId("query-trace").textContent = `TRACE ${trace.trace_id}`;
   const status = byId("query-status");
   status.textContent = trace.status;
   status.className = `status ${statusClass(trace.status)}`;
@@ -121,7 +172,12 @@ function switchView(view) {
   document.querySelectorAll(".entity-pane").forEach((item) => { item.hidden = item.id !== `${view}-pane`; });
 }
 
-/** 创建一个阶段按钮，点击只切换本地阶段详情。 */
+/**
+ * 创建一个精简阶段卡片，展示序号、职责、状态与耗时。
+ *
+ * 首屏不再重复显示 owner 和原始快照；阶段说明帮助用户快速理解流程，
+ * 完整契约与事件仍可通过点击卡片进入 STAGE 面板查看。
+ */
 function stageButton(stage) {
   const button = document.createElement("button");
   button.className = `stage owner-${stage.owner}`;
@@ -133,13 +189,24 @@ function stageButton(stage) {
   const name = document.createElement("span");
   name.className = "stage-name";
   name.textContent = stage.name;
-  const owner = document.createElement("span");
-  owner.className = "stage-owner";
-  owner.textContent = `${stage.owner}  ·  ${stage.status}`;
-  names.append(name, owner);
+  const description = document.createElement("span");
+  description.className = "stage-description";
+  description.textContent = stage.description || `Module ${stage.owner}`;
+  names.append(name, description);
+  const result = document.createElement("span");
+  result.className = "stage-result";
+  const resultLine = document.createElement("span");
+  resultLine.className = "stage-result-line";
   const dot = document.createElement("span");
   dot.className = `stage-dot stage-dot-${statusClass(stage.status)}`;
-  button.append(index, names, dot);
+  const status = document.createElement("span");
+  status.textContent = stage.status;
+  resultLine.append(dot, status);
+  const elapsed = document.createElement("span");
+  elapsed.className = "stage-time";
+  elapsed.textContent = `${Number(stage.elapsed_ms).toFixed(2)} ms`;
+  result.append(resultLine, elapsed);
+  button.append(index, names, result);
   button.addEventListener("click", () => selectStage(stage.stage_id));
   return button;
 }
@@ -237,6 +304,31 @@ function nodeSummary(node) {
   if (typeof fields.type === "string") return fields.type;
   const tail = String(node.path || "root").split(".").pop();
   return tail === "root" ? "ROOT" : tail;
+}
+
+/**
+ * 从节点追踪记录中选取适合常驻展示的字段。
+ *
+ * 类型、摘要、树路径与源码位置始终优先；AST/计划快照中的简单标量最多
+ * 补充四项，数组和嵌套对象仍只在用户开启 RAW DATA 后以 JSON 展示。
+ */
+function nodeFacts(node) {
+  const facts = [
+    ["NODE TYPE", node.kind],
+    ["SUMMARY", nodeSummary(node)],
+    ["TREE PATH", node.path || "root"],
+    ["SOURCE", spanText(node.source_span).replace(/^SOURCE\s*/, "")],
+  ];
+  const fields = node.snapshot?.fields || {};
+  let appended = 0;
+  for (const [key, value] of Object.entries(fields)) {
+    if (!["string", "number", "boolean"].includes(typeof value)) continue;
+    if (facts.some(([label]) => label === key.replaceAll("_", " ").toUpperCase())) continue;
+    facts.push([key.replaceAll("_", " ").toUpperCase(), value]);
+    appended += 1;
+    if (appended === 4) break;
+  }
+  return facts;
 }
 
 /**
@@ -384,7 +476,9 @@ function renderNodes(nodes) {
 /** 清空节点详情和反向关联，但不修改当前树类型。 */
 function resetNodeDetail(message) {
   byId("selected-node-label").textContent = "未选择";
+  renderFacts("node-facts", [["提示", message]]);
   byId("node-snapshot").textContent = pretty({ "提示": message });
+  byId("node-inspector").open = false;
   renderRelationLinks("node-token-links", [], "token");
   renderRelationLinks("node-page-links", [], "page");
 }
@@ -402,6 +496,8 @@ function selectNode(nodeId, activateView = true) {
   state.selectedPageId = null;
   if (activateView) switchView("nodes");
   byId("selected-node-label").textContent = `${node.kind}  ·  ${node.source_link}`;
+  byId("node-inspector").open = true;
+  renderFacts("node-facts", nodeFacts(node));
   byId("node-snapshot").textContent = pretty({ node_id: node.node_id, stage_id: node.stage_id, path: node.path, source_span: node.source_span, snapshot: node.snapshot });
   renderRelationLinks("node-token-links", node.token_ids, "token");
   renderRelationLinks("node-page-links", node.page_ids, "page");
@@ -434,6 +530,13 @@ function selectToken(tokenId, activateView = true) {
   state.selectedPageId = null;
   if (activateView) switchView("tokens");
   byId("selected-token-label").textContent = `${token.type}  ·  ${spanText(token.source_span)}`;
+  byId("token-inspector").open = true;
+  renderFacts("token-facts", [
+    ["LEXEME", token.lexeme],
+    ["TOKEN TYPE", token.type],
+    ["SOURCE", spanText(token.source_span).replace(/^SOURCE\s*/, "")],
+    ["OFFSET", `${token.start_offset}–${token.end_offset}`],
+  ]);
   byId("token-snapshot").textContent = pretty(token);
   renderRelationLinks("token-node-links", token.node_ids, "node");
   renderRelationLinks("token-page-links", token.page_ids, "page");
@@ -471,6 +574,13 @@ function selectPage(pageId, activateView = true) {
   state.selectedTokenId = null;
   if (activateView) switchView("pages");
   byId("selected-page-label").textContent = `${page.file_name}  ·  PAGE ${page.page_number}`;
+  byId("page-inspector").open = true;
+  renderFacts("page-facts", [
+    ["PAGE", page.page_number],
+    ["TABLE", page.table || "—"],
+    ["FILE", page.file_name],
+    ["OPERATIONS", page.events.length],
+  ]);
   byId("page-snapshot").textContent = pretty({ page_id: page.page_id, file: page.file, table: page.table, page_number: page.page_number, stage_ids: page.stage_ids });
   renderRelationLinks("page-token-links", page.token_ids, "token");
   renderRelationLinks("page-node-links", page.node_ids, "node");
@@ -577,6 +687,9 @@ function clearLinkSelection() {
   byId("selected-node-label").textContent = "未选择";
   byId("selected-token-label").textContent = "未选择";
   byId("selected-page-label").textContent = "未选择";
+  byId("node-inspector").open = false;
+  byId("token-inspector").open = false;
+  byId("page-inspector").open = false;
   applyLinkHighlights([], [], []);
 }
 
@@ -624,7 +737,7 @@ async function loadTrace() {
 function chooseModule(module) {
   state.module = module;
   state.selectedStageId = null;
-  state.view = "stage";
+  state.view = "nodes";
   document.querySelectorAll(".filter").forEach((item) => item.classList.toggle("active", item.dataset.module === module));
   const url = new URL(window.location.href);
   url.searchParams.set("module", module);
@@ -639,6 +752,8 @@ function bootstrap() {
   document.querySelectorAll(".filter").forEach((button) => button.addEventListener("click", () => chooseModule(button.dataset.module)));
   document.querySelectorAll(".entity-tab").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   byId("clear-link").addEventListener("click", clearLinkSelection);
+  byId("debug-toggle").addEventListener("click", toggleDebugVisibility);
+  setDebugVisibility(false);
   chooseModule(state.module);
 }
 
