@@ -9,13 +9,14 @@
     statements = parse_script("CREATE DATABASE shop; USE shop;")
 
 ``parse`` 依次协调 lexer 和 parser：先将 SQL 字符串切分为带位置的 Token，
-再将 Token 按 V1.1 文法及已开放的 V2 BOOLEAN、Column/TableRef、表别名、
-INNER JOIN 和逻辑表达式语法构建为 contracts.ast.Statement。A 的职责在
+再将 Token 按 V1.1 文法、V2 BOOLEAN/Column/TableRef/INNER JOIN/逻辑表达式，
+以及 V3 CREATE INDEX/DROP INDEX 语法构建为 contracts.ast.Statement。A 的职责在
 AST 产生时结束；它绝不查询数据库、访问磁盘、调用 Storage，也不执行条件。
 
 本包只导出 parse 和 parse_script，避免调用方依赖 Lexer、Parser 内部实现。
-支持 CREATE/DROP DATABASE、USE、CREATE/DROP TABLE、INSERT、SELECT、
-UPDATE、DELETE。错误统一抛出带行列号的 contracts.errors.ParseError。
+支持 CREATE/DROP DATABASE、USE、CREATE/DROP TABLE、CREATE/DROP INDEX、
+INSERT、SELECT、UPDATE、DELETE。错误统一抛出带行列号的
+contracts.errors.ParseError。
 """
 
 from __future__ import annotations
@@ -41,8 +42,8 @@ def parse(sql: str) -> Statement:
     输入只能包含一条 SQL，结尾允许至多一个分号。
 
     Args:
-        sql: 待编译的一条 SQL 文本。关键字大小写不敏感；表名、库名和列名
-            会在 AST 中统一保存为小写。
+        sql: 待编译的一条 SQL 文本。关键字大小写不敏感；数据库名、表名、
+            列名和索引名会在 AST 中统一保存为小写。
 
     Returns:
         contracts.ast.Statement 联合类型中的一个具体 AST 节点。
@@ -62,6 +63,8 @@ def parse_script(sql: str) -> Script:
     Lexer 只运行一次，Parser 随后连续消费同一个 Token 流；实现不会调用
     ``split(';')``，所以 ``INSERT ... VALUES ('a;b')`` 中的分号不会切断语句。
     各语句之间必须以分号分隔，末条分号可省略，空白输入返回空元组。
+    V3 的 CREATE INDEX 与 DROP INDEX 和既有语句使用完全相同的 Token 游标、
+    原文切片及 SourceSpan 构建流程，不存在索引 DDL 专用的字符串分割路径。
 
     Args:
         sql: 可能包含零条、一条或多条语句的完整 SQL 源码。

@@ -210,12 +210,21 @@ function eventCard(event) {
 /**
  * 从节点快照中提取一行简短业务说明。
  *
- * 优先显示列限定名、表名、别名、字面量或类型等用户能
+ * 优先显示索引定义、列限定名、表名、别名、字面量或类型等用户能
  * 直接对应 SQL 的标量。复合字段仍保留在右侧完整快照中，
  * 不在树节点上展开，避免大型计划树被文字淹没。
  */
 function nodeSummary(node) {
   const fields = node.snapshot?.fields || {};
+  if (node.kind === "CreateIndexStmt" && typeof fields.index_name === "string") {
+    const target = typeof fields.table === "string" && typeof fields.column === "string"
+      ? `${fields.table}.${fields.column}`
+      : "未知目标";
+    return `${fields.index_name} → ${target}`;
+  }
+  if (node.kind === "DropIndexStmt" && typeof fields.index_name === "string") {
+    return fields.index_name;
+  }
   if (typeof fields.name === "string") {
     return typeof fields.qualifier === "string" ? `${fields.qualifier}.${fields.name}` : fields.name;
   }

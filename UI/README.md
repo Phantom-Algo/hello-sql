@@ -54,6 +54,11 @@ statement = traced.require_statement()
 - AST：不可变 dataclass 树的节点类型、字段和路径；
 - SourceSpan：语句原文在完整脚本中的一基闭区间。
 
+AST 追踪按 dataclass 通用遍历，不使用语句类型白名单。V3 的
+`CreateIndexStmt` 和 `DropIndexStmt` 会自动进入同一个 `a.ast` 阶段；在
+`/inspect A` 的 NODES 面板中分别显示“索引名 → 表.列”和“索引名”摘要，
+点击后仍可查看完整字段并联动 SQL Token。
+
 追踪入口不修改 `compiler.parse` 的行为，也不会为生成界面数据重新解析 SQL。
 词法或语法失败时，失败上游会保留，未运行的下游阶段标记为 `SKIPPED`。
 

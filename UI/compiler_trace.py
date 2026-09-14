@@ -7,6 +7,8 @@
 
 Parser 追踪通过子类包装现有规则，记录真实的调用顺序、递归
 深度、Token 游标变化、返回值和错误。AST 快照则按前序遍历生成。
+遍历器面向所有 contracts.ast dataclass，因此 V3 的 CreateIndexStmt 与
+DropIndexStmt 无需新增追踪契约即可自动产生真实节点、字段和路径。
 现有契约只定义语句级 SourceSpan，所以本模块只给 AST 根节点关联
 语句范围，不伪造子节点精确位置。
 """
@@ -533,8 +535,10 @@ def _parser_stage(
 def _ast_stage(statements: Script) -> StageTrace:
     """将同一次 Parser 产生的 AST 转为树快照和前序节点事件。
 
-    根节点事件使用语句级 SourceSpan；子节点暂无契约位置，
-    所以只展示稳定字段路径，不伪造范围。
+    遍历逻辑只判断对象是否为 dataclass，不维护节点类型白名单，所以新增的
+    CreateIndexStmt、DropIndexStmt 会与 V1/V2 节点走相同路径自动进入快照。
+    根节点事件使用语句级 SourceSpan；子节点暂无契约位置，所以只展示稳定
+    字段路径，不伪造范围。
     """
 
     started = perf_counter()
@@ -553,7 +557,7 @@ def _ast_stage(statements: Script) -> StageTrace:
     elapsed = (perf_counter() - started) * 1000
     return StageTrace(
         "a.ast", _AST_SEQUENCE, TraceOwner.A, "AST",
-        "展示 Parser 实际构建的语句、表、列和表达式节点树。",
+        "展示 Parser 实际构建的语句、索引、表、列和表达式节点树。",
         TraceStatus.SUCCESS, "Statement or Script", "JSON-compatible AST forest",
         {"statement_count": len(statements)}, tuple(events),
         {"statement_count": len(statements), "trees": trees},
@@ -572,8 +576,9 @@ def _walk_ast(
 ) -> None:
     """前序遍历 AST dataclass，为每个真实节点追加事件。
 
-    标量和枚举作为父节点字段展示，不创建虚假节点；序列按
-    原始下标递归。函数只读取 frozen AST，不会修改业务结果。
+    标量和枚举作为父节点字段展示，不创建虚假节点；序列按原始下标递归。
+    CREATE/DROP INDEX 的名称字段因此保留在根节点快照中，而不会被伪造成
+    子 AST。函数只读取 frozen AST，不会修改业务结果或公共追踪契约。
     """
 
     if is_dataclass(value) and not isinstance(value, type):

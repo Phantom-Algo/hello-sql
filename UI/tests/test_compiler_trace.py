@@ -167,3 +167,80 @@ def test_empty_script_is_a_successful_zero_statement_trace() -> None:
     assert all(stage.status is TraceStatus.SUCCESS for stage in result.stages)
     assert _stage(result, "a.ast").metrics["node_count"] == 0
     assert _stage(result, "a.source_span").events == ()
+
+
+# 两个参数分别锁定 V3 的创建与删除索引节点，证明 AST 追踪没有类型白名单。
+@pytest.mark.parametrize(
+    ("sql", "node_type", "expected_fields", "parser_rule"),
+    [
+        (
+            "CREATE INDEX idx_users_id ON users (id);",
+            "CreateIndexStmt",
+            {"index_name": "idx_users_id", "table": "users", "column": "id"},
+            "_parse_create_index_statement",
+        ),
+        (
+            "DROP INDEX idx_users_id;",
+            "DropIndexStmt",
+            {"index_name": "idx_users_id"},
+            "_parse_drop_index_statement",
+        ),
+    ],
+)
+def test_index_ddl_enters_parser_and_ast_trace_stages(
+    sql: str,
+    node_type: str,
+    expected_fields: dict[str, str],
+    parser_rule: str,
+) -> None:
+    """验证索引 DDL 的真实 Parser 规则、AST 节点和字段都进入 A 追踪。
+
+    测试同时查看 Parser 的规则事件和 AST 的前序事件，而不是只比较最终
+    parse 结果。这样可以证明答辩界面展示的数据来自本次真实编译过程，并且
+    CreateIndexStmt/DropIndexStmt 由通用 dataclass 快照器保存完整字段。
+
+    Args:
+        sql: 当前需要追踪的完整索引 DDL。
+        node_type: AST 快照预期保存的具体 dataclass 类型名。
+        expected_fields: 查看器节点详情中应出现的规范化字段。
+        parser_rule: Parser 阶段应记录的索引专用规则名称。
+    """
+    result = trace_parse(sql)
+    parser_stage = _stage(result, "a.parser")
+    ast_stage = _stage(result, "a.ast")
+
+    assert result.succeeded
+    assert parser_rule in [
+        event.input_snapshot["rule"] for event in parser_stage.events
+    ]
+    assert len(ast_stage.events) == 1
+    assert ast_stage.events[0].action == f"生成 {node_type} 节点"
+    assert ast_stage.events[0].source_span == result.statements[0].span
+    assert ast_stage.output_snapshot["trees"] == (
+        {"node_type": node_type, "fields": expected_fields},
+    )
+
+
+# 该测试确认脚本模式会按原顺序为两种索引语句各生成一棵 AST 根树。
+def test_index_script_trace_contains_create_and_drop_ast_forest() -> None:
+    """验证 CREATE/DROP INDEX 多语句追踪形成有序的两棵 AST 树。
+
+    trace_parse_script 只扫描一次完整输入；AST 阶段应保存两个根节点事件，
+    并让第二条 DROP INDEX 的 SourceSpan 继续使用完整脚本中的第 2 行位置。
+    """
+    result = trace_parse_script(
+        "CREATE INDEX idx ON users (id);\n"
+        "DROP INDEX idx;"
+    )
+    ast_stage = _stage(result, "a.ast")
+
+    assert result.succeeded
+    assert [event.action for event in ast_stage.events] == [
+        "生成 CreateIndexStmt 节点",
+        "生成 DropIndexStmt 节点",
+    ]
+    assert [tree["node_type"] for tree in ast_stage.output_snapshot["trees"]] == [
+        "CreateIndexStmt",
+        "DropIndexStmt",
+    ]
+    assert result.statements[1].span == SourceSpan(2, 1, 2, 15)

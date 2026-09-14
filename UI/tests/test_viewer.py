@@ -16,7 +16,15 @@ import pytest
 from compiler import parse, parse_script
 from runner import Runner
 from storage import DatabaseServer
-from UI import InspectionViewer, QueryInspector
+from UI import (
+    InspectionModule,
+    InspectionSnapshot,
+    InspectionViewer,
+    QueryInspector,
+    QueryTrace,
+    TraceStatus,
+    trace_parse,
+)
 
 
 def _inspector_with_trace(tmp_path) -> QueryInspector:
@@ -33,6 +41,35 @@ def _inspector_with_trace(tmp_path) -> QueryInspector:
     )
     runner.execute("CREATE TABLE visual_demo (id INT, enabled BOOLEAN);")
     return inspector
+
+
+def _compiler_only_snapshot(sql: str) -> InspectionSnapshot:
+    """把一次成功 A 编译追踪包装成查看器可读取的只读快照。
+
+    B/C 尚未实现 V3 索引执行时，A 的 AST 可视化仍可独立验收。该辅助函数
+    只使用 trace_parse 已产生的真实四阶段记录构造 QueryTrace，不补造运行、
+    存储事件，也不修改公共追踪契约。
+
+    Args:
+        sql: 需要在查看器 NODES 面板中验证的单条索引 DDL。
+
+    Returns:
+        仅包含 A 阶段、可直接交给 InspectionViewer 的 InspectionSnapshot。
+    """
+    compiled = trace_parse(sql)
+    assert compiled.succeeded
+    parsed = compiled.statements[0]
+    trace = QueryTrace(
+        trace_id="trace-index-visual",
+        query_number=1,
+        sql=parsed.sql,
+        database="main",
+        status=TraceStatus.SUCCESS,
+        stages=compiled.stages,
+        source_span=parsed.span,
+        result_summary={"kind": "compiler-only-verification"},
+    )
+    return InspectionSnapshot(trace, InspectionModule.A, trace.stages)
 
 
 def _read_json(url: str) -> dict[str, object]:
@@ -74,6 +111,8 @@ def test_viewer_serves_packaged_page_and_filtered_trace_api(tmp_path):
             script = response.read().decode("utf-8")
         assert "function buildNodeForest(nodes)" in script
         assert "function nodeTreeBranch(" in script
+        assert 'node.kind === "CreateIndexStmt"' in script
+        assert 'node.kind === "DropIndexStmt"' in script
 
         payload = _read_json(f"{root}api/trace?module=A")
         assert payload["module"] == "A"
@@ -124,3 +163,59 @@ def test_query_inspector_lazily_opens_and_closes_cross_platform_view(tmp_path):
     assert not rebuilt_opened
     assert "module=ALL" in rebuilt_url
     inspector.close_view()
+
+
+# 两个用例通过查看器真实 JSON API 验证创建和删除索引节点均可供网页树渲染。
+@pytest.mark.parametrize(
+    ("sql", "node_type", "expected_fields"),
+    [
+        (
+            "CREATE INDEX idx_users_id ON users (id);",
+            "CreateIndexStmt",
+            {"index_name": "idx_users_id", "table": "users", "column": "id"},
+        ),
+        (
+            "DROP INDEX idx_users_id;",
+            "DropIndexStmt",
+            {"index_name": "idx_users_id"},
+        ),
+    ],
+)
+def test_viewer_exposes_index_ast_nodes_to_inspect_tree(
+    sql: str,
+    node_type: str,
+    expected_fields: dict[str, str],
+) -> None:
+    """验证 /inspect A 的 linkage 包含可点击的索引 AST 根节点。
+
+    浏览器树只消费 API 的 linkage.nodes，因此本测试启动真实本机查看器、读取
+    module=A JSON，并检查节点类型、阶段、父子关系和完整快照字段。只要这些
+    数据存在，通用 renderNodeTree 就会按 a.ast 树入口渲染节点卡片；前端的
+    nodeSummary 再为 CREATE/DROP INDEX 提供人类可读摘要。
+
+    Args:
+        sql: 当前查看器快照中的索引 DDL 原文。
+        node_type: 树节点应显示的 AST 类型名称。
+        expected_fields: 点击节点后详情面板应显示的 AST 字段。
+    """
+    snapshot = _compiler_only_snapshot(sql)
+    viewer = InspectionViewer(lambda module: snapshot)
+    root = viewer.start()
+    try:
+        payload = _read_json(f"{root}api/trace?module=A")
+        ast_nodes = [
+            node
+            for node in payload["linkage"]["nodes"]
+            if node["stage_id"] == "a.ast"
+        ]
+
+        assert len(ast_nodes) == 1
+        assert ast_nodes[0]["kind"] == node_type
+        assert ast_nodes[0]["parent_id"] is None
+        assert ast_nodes[0]["snapshot"] == {
+            "node_type": node_type,
+            "fields": expected_fields,
+        }
+        assert ast_nodes[0]["token_ids"]
+    finally:
+        viewer.close()

@@ -1,281 +1,368 @@
-# 模块 A（编译层）V2 个人开发计划
+# 模块 A（编译层）V3 个人开发计划与完成记录
 
 > 负责人：A
 >
-> 依据：`docs/v2-dev/v2-dev-plan.md`、`contracts/ast.py`（Contract 2.0）
+> 当前版本：V3 / Contract 3.0
 >
-> 当前状态：A 模块 V2 核心实现与模块测试已完成，等待 C 模块完成 AST 适配和项目级集成
+> 依据：`docs/v3-dev/v3-dev-plan.md`、`contracts/ast.py`、`compiler/` 真实实现
 >
-> 目标：让编译层支持 V2 SQL，并向模块 C 输出统一、带源码位置的 AST
+> 当前状态：V3 索引 DDL 编译能力已经完成，A 模块、V3 公共契约和全项目回归测试全部通过
+>
+> 核心目标：在保持 V1/V2 SQL 兼容的基础上，把 `CREATE INDEX` 和
+> `DROP INDEX` 转换为 C 可以直接消费的统一 AST，并继续提供准确的源码位置和追踪信息
 
-## 一、当前完成情况
+## 一、版本升级说明
 
-| 项目 | 当前完成情况 | 验收状态 |
+V2 已经完成 BOOLEAN、限定列、表别名、INNER JOIN、表达式优先级、
+`parse_script()` 和 `SourceSpan`。V3 在这些稳定能力上增加单列、非唯一索引
+DDL；不修改 V2 AST 的既有字段，也不改变 `parse()` / `parse_script()` 的公开用法。
+
+本轮 A 的新增范围只有索引 DDL 的词法、语法、AST 输出、错误定位、追踪展示和
+回归测试。索引是否存在、目标表或列是否存在、索引文件如何组织以及是否选择索引
+执行，仍分别属于 B、C 的职责。
+
+## 二、当前完成情况
+
+| 项目 | V3 实现结果 | 验收状态 |
 |---|---|---|
-| V1 SQL 解析 | `parse()` 保持单语句接口，37 条 Golden SQL 均按预期解析 | 已完成 |
-| A 模块测试 | BOOLEAN、优先级、别名、JOIN、脚本和位置等共 137 项通过 | 已完成 |
-| AST 可视化 | 已展示 `Column`、`TableRef`、`JoinClause`、`Or`、`Not` 等 V2 节点 | 已完成 |
-| BOOLEAN | 支持列类型以及 `TRUE`、`FALSE`，字面量转换为 Python `bool` | 已完成 |
-| 表限定列 | 支持 `id` 与 `u.id`，输出统一的 `Column` | 已完成 |
-| 表别名 | 支持 `users AS u` 和 `users u`，名称统一转为小写 | 已完成 |
-| 逻辑表达式 | 支持比较、`NOT`、`AND`、`OR`、括号和规定优先级 | 已完成 |
-| INNER JOIN | 支持 `JOIN`、`INNER JOIN` 和按源码顺序保存的连续 JOIN | 已完成 |
-| SQL 脚本 | 已新增 `parse_script()`，直接消费完整 Token 流 | 已完成 |
-| 源码范围 | 每条语句返回原始 SQL 和全局一基闭区间 `SourceSpan` | 已完成 |
-| C 模块适配 | Runner 仍按 V1 字符串字段读取 `SelectStmt` | 集成待办（非 A 实现范围） |
+| V1/V2 回归 | 原有数据库、表、DML、BOOLEAN、JOIN、表达式与脚本解析保持可用 | 已完成 |
+| INDEX Token | 新增 `TokenType.KW_INDEX` 和 `KEYWORDS["INDEX"]` | 已完成 |
+| 关键字大小写 | `INDEX`、`index`、`Index` 均识别为 `KW_INDEX`，原始 lexeme 保持不变 | 已完成 |
+| CREATE 分派 | `CREATE DATABASE/TABLE/INDEX` 由统一入口准确分派 | 已完成 |
+| DROP 分派 | `DROP DATABASE/TABLE/INDEX` 由统一入口准确分派 | 已完成 |
+| CREATE INDEX AST | 支持 `CREATE INDEX name ON table (column)`，三个名称统一小写 | 已完成 |
+| DROP INDEX AST | 支持 `DROP INDEX name`，索引名统一小写 | 已完成 |
+| 错误位置 | 不完整语法和不支持的 `CREATE UNIQUE INDEX` 返回 `E_SYNTAX` 与全局行列位置 | 已完成 |
+| 多语句兼容 | 索引 DDL 可由 `parse_script()` 在完整 Token 流中解析并生成原文与 `SourceSpan` | 已完成 |
+| AST 追踪 | 两种索引 AST 均进入 A 的 AST 追踪阶段 | 已完成 |
+| AST 可视化 | `/inspect` 和通用树适配器可展示索引节点及其字段 | 已完成 |
+| 完整验收 | A 模块 163 项、V3 契约 15 项、全项目 804 项测试通过 | 已完成 |
 
-### 当前验收记录
+## 三、A 的职责边界
 
-- A 模块命令：`.venv/bin/python -m pytest -q tests/A_tests`
-- A 模块结果：`137 passed`。
-- 项目级命令：`.venv/bin/python -m pytest -q`
-- 项目级结果：`444 passed, 3 failed`。失败均发生在 C 尚未把
-  `SelectStmt.table: TableRef` 和 `columns: tuple[Column, ...]` 接入逻辑计划，
-  不属于 A 的词法或语法失败。
-- 阶段结论：A 已达到“可交接”状态；整个项目只有在 B、C 完成各自 V2 工作并
-  通过综合测试后，才能标记为“V2 完成”。
+### 3.1 A 已完成的工作
 
-## 二、A 的职责边界
+- 维护 `TokenType`、关键字表、Lexer、Parser 和编译层公开入口。
+- 保留 Token 的原始文本、全局一基行列位置以及源码起止偏移。
+- 解析 V1/V2 的 BOOLEAN、限定列、别名、JOIN 和逻辑表达式。
+- 解析 V3 的单列、非唯一 `CREATE INDEX` 与 `DROP INDEX`。
+- 所有进入 AST 的数据库名、表名、列名、别名、限定符和索引名统一转为小写。
+- `parse()` 继续只接受一条 SQL；`parse_script()` 直接消费完整 Token 流，
+  不使用 `split(";")`。
+- 为每条脚本语句保留原始 SQL 和相对于完整脚本的 `SourceSpan`。
+- 将 Token、Parser、AST 和 SourceSpan 结果接入既有追踪与可视化链路。
+- 通过专项测试、公共契约测试和全项目回归测试固定上述行为。
 
-### 需要完成
+### 3.2 不由 A 完成的工作
 
-- 维护词法分析器、语法分析器和编译层公开接口。
-- 增加 V2 关键字、布尔字面量、点号和相关语法。
-- 按优先级解析 `NOT`、比较、`AND`、`OR` 和括号。
-- 解析表限定列、表别名和连续 `INNER JOIN`。
-- 新增多语句解析接口，并保留准确的行列信息和原始 SQL。
-- 所有标识符和别名统一转为小写。
-- 保持 V1 的 `parse()` 和已有语法可用。
-- 补充 A 模块单元测试，并向 C 提供 AST 示例和交接说明。
+- 判断索引、表或列是否真实存在。
+- 判断索引是否重名，以及抛出 `E_INDEX_EXISTS` / `E_INDEX_NOT_FOUND`。
+- 创建、删除、维护或持久化 B+ 树索引。
+- 在 INSERT、UPDATE、DELETE 后维护索引一致性。
+- 根据统计信息选择顺序扫描或索引扫描。
+- 构建索引逻辑计划、物理计划、优化规则和执行器。
 
-### 不由 A 完成
+A 的职责在“语法正确时生成 Contract 3.0 AST”处结束。C 消费 AST 并完成语义、
+计划和执行编排；B 是索引存在性、索引数据和存储状态的权威来源。
 
-- 表、列是否真实存在。
-- 重名列、未知限定符、重复别名等语义校验。
-- 类型推断以及 WHERE、JOIN ON 是否为布尔表达式的检查。
-- JOIN 执行、查询优化、存储格式和 TUI。
-- BOOLEAN 在磁盘中的编码方式。
+## 四、V3 索引 DDL 实现记录
 
-上述工作分别由 B、C 负责；A 只保证语法正确时生成符合 Contract 2.0 的 AST。
+### 4.1 Token 与 Lexer
 
-## 三、实施步骤
+主要文件：`compiler/tokens.py`、`compiler/lexer.py`
 
-每一步完成后单独运行测试并提交，避免一次修改过多内容。
+新增 Token：
 
-### 步骤一：确认 V2 契约细节
+```python
+TokenType.KW_INDEX
+```
 
-- 确认 `ParsedStatement.sql` 是否保留语句末尾分号和两侧空白。
-- 确认 `SourceSpan` 是否覆盖分号，以及结束位置是否为闭区间。
-- 确认 `;;`、开头分号和结尾多个分号的处理方式。
-- 确认 `parse_script()` 遇到第一条错误后是否立即停止。
-- 与 C 明确 `stop_on_error=False` 的结果格式；当前返回类型无法同时返回成功语句和多个错误。
+新增关键字映射：
 
-完成标准：把最终约定写入 V2 契约文档，后续测试按该约定编写。
+```python
+"INDEX": TokenType.KW_INDEX
+```
 
-### 步骤二：建立 V2 测试骨架和回归基线
+Lexer 扫描标识符后使用大写形式查询 `KEYWORDS`，因此三种大小写输入都会得到
+`KW_INDEX`；Token 的 `lexeme` 仍保留用户输入原文。V3 没有新增符号，
+`CREATE INDEX` 使用的 `ON`、`(`、`)` 和 `;` 均复用已有 Token。
 
-涉及目录：`tests/A_tests/`、`tests/golden/`（如现有结构需要）。
+每个 Token 继续携带：
 
-- 保留现有 V1 测试作为回归基线。
-- 修正 AST 可视化测试对 V2 `SelectStmt.joins` 字段的预期。
-- 分别建立 BOOLEAN、限定列、表达式优先级、别名、JOIN 和脚本解析测试。
-- 先写最小失败用例，再按后续步骤逐项实现。
+- `position.line`：相对于完整输入的一基行号；
+- `position.column`：相对于完整输入的一基列号；
+- `start_offset`：Token 在完整源码中的起始偏移；
+- `end_offset`：Token 在完整源码中的半开结束偏移。
 
-完成标准：清楚区分已有回归失败和等待实现的 V2 测试。
-
-### 步骤三：扩展 Token 定义
-
-主要文件：`compiler/tokens.py`
-
-- 增加 `BOOLEAN`、`TRUE`、`FALSE`、`NOT`、`AS`、`INNER`、`JOIN`、`ON`。
-- 确认 `OR` 纳入正式语法支持。
-- 增加限定列需要的点号 Token：`.`。
-- 为 Token 保留起始位置，并增加计算源码切片所需的结束位置或字符偏移量。
-- 关键字匹配不区分大小写。
-
-完成标准：每个新增关键字和符号均能产生正确 Token，且不破坏原有 Token。
-
-### 步骤四：完善 Lexer 和全局源码坐标
-
-主要文件：`compiler/lexer.py`
-
-- 在整个输入脚本中持续维护行号、列号和字符偏移量，不能每条语句重新计数。
-- 正确识别点号、分号、字符串、数字、运算符和新增关键字。
-- 换行后的 Token 仍使用准确的 1-based 行列号。
-- 保留可用于截取每条原始 SQL 的边界信息。
-
-完成标准：多行、多语句输入中的 Token 坐标全部通过测试。
-
-### 步骤五：实现 BOOLEAN 类型和字面量
+### 4.2 Parser 分派函数
 
 主要文件：`compiler/parser.py`
 
-- `CREATE TABLE` 类型支持 `BOOLEAN`。
-- `INSERT` 值支持 `TRUE` 和 `FALSE`，输出 Python `bool`。
-- 表达式中的布尔值输出 `Literal(True/False)`。
-- 大小写形式均可解析，例如 `true`、`FALSE`。
+#### `_parse_create_statement()`
 
-完成标准：BOOLEAN 的建表、插入和表达式用例通过，AST 与 Contract 2.0 一致。
+该函数先消费 `CREATE`，再检查后续 Token，并在 `DATABASE`、`TABLE`、`INDEX`
+三种语法之间分派。遇到 `KW_INDEX` 时进入 `_parse_create_index_statement()`。
+它只决定语法分支，不访问 Catalog 或 Storage。
 
-### 步骤六：实现标量表达式和表限定列
+#### `_parse_create_index_statement()`
 
-主要文件：`compiler/parser.py`
-
-- 将列解析为 `Column(name, qualifier=None)`。
-- 支持 `users.id`、`u.id`，输出 `Column(name="id", qualifier="u")`。
-- 支持列与列比较，例如 `u.id = o.user_id`。
-- 支持列与字面量、字面量与列、字面量与字面量比较。
-- 单独的列或字面量在语法层允许成为表达式；是否满足布尔上下文由 C 判断。
-- 标识符和限定符统一转为小写。
-
-完成标准：各种比较组合均能生成正确的 `Column`、`Literal` 和 `Cmp`。
-
-### 步骤七：重构表达式优先级
-
-主要文件：`compiler/parser.py`
-
-优先级从高到低为：括号、比较、`NOT`、`AND`、`OR`。
-
-建议拆分解析函数：
+该函数按固定顺序消费：
 
 ```text
-parse_expr -> parse_or -> parse_and -> parse_not -> parse_predicate -> parse_scalar
+INDEX identifier ON identifier ( identifier )
 ```
 
-必须验证：
+三个标识符都通过 `parse_identifier()` 读取，因此索引名、表名和列名进入 AST
+前统一转为小写。缺少名称、`ON`、括号或列名时，函数在第一个不符合预期的
+Token 处抛出 `ParseError(E_SYNTAX)`。
 
-- `a = 1 OR b = 2 AND c = 3` 按 `a = 1 OR (b = 2 AND c = 3)` 解析。
-- `NOT a = 1 AND b = 2` 按 `(NOT (a = 1)) AND b = 2` 解析。
-- 括号能够覆盖默认优先级。
-- 连续 `NOT NOT ...` 可以递归解析。
+#### `_parse_drop_statement()`
 
-完成标准：AST 准确体现优先级，不依赖执行层修正。
+该函数先消费 `DROP`，再在 `DATABASE`、`TABLE`、`INDEX` 三种分支之间选择。
+遇到 `KW_INDEX` 时进入 `_parse_drop_index_statement()`，不改变原有数据库和表
+删除语法。
 
-### 步骤八：实现 TableRef 和表别名
+#### `_parse_drop_index_statement()`
 
-主要文件：`compiler/parser.py`
+该函数消费 `INDEX` 后读取一个索引名并返回 `DropIndexStmt`。V3 规定索引名在
+同一数据库中唯一，因此语法中不携带表名。索引是否存在由 B 判断，不属于 Parser。
 
-- `FROM users` 输出 `TableRef(name="users")`。
-- `FROM users AS u` 和 `FROM users u` 均输出别名 `u`。
-- 表名和别名统一转为小写。
-- SELECT 投影列改为 `tuple[Column, ...]`，不再是字符串列表。
-- 保留 `SELECT *`；V2 不扩展 `u.*`、列别名或表达式投影。
+#### `parse()` 与 `parse_script()`
 
-完成标准：无别名、显式别名和隐式别名均生成正确 `TableRef`。
+`parse(sql)` 保持单语句入口兼容，索引 DDL 与已有 SQL 使用相同的结尾检查。
+`parse_script(source)` 继续直接消费一份完整 Token 流，可以在同一脚本中连续解析
+创建和删除索引，并为每条语句生成正确的原文与全局 `SourceSpan`。
 
-### 步骤九：实现 INNER JOIN
+### 4.3 V3 AST 输出
 
-主要文件：`compiler/parser.py`
+公共契约位于 `contracts/ast.py`，两个节点都使用冻结数据类，并已加入
+`Statement` 联合类型。
 
-- 支持 `JOIN ... ON ...` 和 `INNER JOIN ... ON ...`。
-- `ON` 后复用完整表达式解析器。
-- 支持一条 SELECT 连续多个 JOIN，按源码顺序存入 `SelectStmt.joins`。
-- 每个 JOIN 生成 `JoinClause(right=TableRef(...), on=..., kind=JoinType.INNER)`。
-- 缺失表名、`ON` 或表达式时抛出 `ParseError(E_SYNTAX)`。
-
-完成标准：单 JOIN、多 JOIN、带别名 JOIN 和复杂 ON 表达式全部通过。
-
-### 步骤十：实现 `parse_script()` 和 SourceSpan
-
-主要文件：`compiler/parser.py` 和编译层公开入口。
-
-- 新增 `parse_script(source)`，返回契约规定的语句集合。
-- 直接消费同一个 Token 流，不使用 `source.split(';')`。
-- 正确处理字符串内部的分号。
-- 每条结果包含 AST、原始 SQL 和 1-based `SourceSpan`。
-- 空输入返回空结果。
-- 支持最后一条语句没有分号。
-- 错误信息定位到整个脚本中的真实行列。
-
-完成标准：多行脚本、字符串分号、末尾无分号和空输入均通过测试。
-
-### 步骤十一：保持单语句接口兼容
-
-- 保留原有 `parse(sql)` 调用方式。
-- `parse()` 可复用 `parse_script()`，但必须只接受一条有效语句。
-- 多条语句传给 `parse()` 时返回明确语法错误。
-- 检查 AST 字段升级为 `Column`、`TableRef` 后对现有调用方的影响。
-- 与 C 协调合并顺序，避免 AST 输出变化导致主分支长时间不可用。
-
-完成标准：V1 语法行为稳定，公开 API 有明确测试。
-
-### 步骤十二：测试、文档和交接
-
-- 运行全部 A 模块测试和项目级回归测试。
-- 更新 AST 可视化器对 `Column`、`Or`、`Not`、`TableRef` 和 `JoinClause` 的展示。
-- 实现完成后更新 `docs/module-a-source-guide.md`，使其描述真实代码。
-- 向 C 提供典型 SQL、预期 AST、错误行为和源码范围示例。
-- 将未解决的契约问题记录到 V2 计划书，不在代码中自行猜测。
-
-完成标准：测试通过、文档与实现一致，C 可直接基于 A 的 AST 开始语义分析。
-
-当前状态：A 模块测试、AST 可视化、源码说明和 C 交接示例已完成。项目级
-回归仍等待 C 适配 V2 AST；该外部集成项保留为未完成，不影响 A 模块交接。
-
-## 四、必须覆盖的语法
-
-```ebnf
-script      := { stmt ';' } [stmt [';']]
-selectStmt  := SELECT selectList FROM tableRef { joinClause } [WHERE expr]
-type        := INT | TEXT | REAL | BOOLEAN
-tableRef    := identifier [AS identifier | identifier]
-joinClause  := [INNER] JOIN tableRef ON expr
-expr        := orExpr
-orExpr      := andExpr { OR andExpr }
-andExpr     := notExpr { AND notExpr }
-notExpr     := NOT notExpr | predicate
-predicate   := '(' expr ')' | scalar [comparisonOp scalar]
-scalar      := columnRef | value
-columnRef   := [identifier '.'] identifier
-value       := NUMBER | STRING | TRUE | FALSE
-```
-
-V2 明确不支持：`LEFT/RIGHT/FULL/CROSS JOIN`、子查询、聚合、排序、分组、列别名、表达式投影和 `table.*`。
-
-## 五、核心验收样例
+输入：
 
 ```sql
-CREATE TABLE users (
-  id INT,
-  active BOOLEAN
-);
-
-SELECT u.id, o.user_id
-FROM users AS u
-INNER JOIN orders o ON u.id = o.user_id AND NOT o.deleted
-WHERE u.active = TRUE OR o.total > 100;
+CREATE INDEX Idx_Users_ID ON Users (ID);
 ```
 
-验收时确认：
+输出：
 
-- 名称和别名均已规范化为小写。
-- `u.id` 和 `o.user_id` 的 qualifier 正确。
-- JOIN 位于 `SelectStmt.joins`，顺序与源码一致。
-- `NOT`、`AND`、`OR` 的 AST 层级符合优先级。
-- 两条语句都有准确的原始 SQL 和 `SourceSpan`。
+```python
+CreateIndexStmt(
+    index_name="idx_users_id",
+    table="users",
+    column="id",
+)
+```
 
-## 六、建议提交顺序
+输入：
 
-1. `test(a): 建立 V2 编译层测试骨架`
-2. `feat(a): 扩展 token 与 lexer 源码位置`
-3. `feat(a): 支持 boolean 和限定列`
-4. `refactor(a): 实现 V2 表达式优先级`
-5. `feat(a): 支持表别名和 inner join`
-6. `feat(a): 增加 parse_script 与 source span`
-7. `docs(a): 更新编译层说明与 C 交接示例`
+```sql
+DROP INDEX Idx_Users_ID;
+```
 
-## 七、最终完成标准
+输出：
 
-- [x] V2 契约细节已写入团队 V2 计划书，并由测试固定边界行为。
-- [x] 新增关键字、点号、Token 偏移和全局源码坐标工作正常。
-- [x] BOOLEAN 类型及布尔字面量解析正确。
-- [x] 表限定列、列间比较和标量表达式解析正确。
-- [x] `NOT`、`AND`、`OR` 及括号优先级正确。
-- [x] 表别名和连续 INNER JOIN 解析正确。
-- [x] `parse_script()` 不依赖字符串分割，并生成准确的 SQL 与 SourceSpan。
-- [x] `parse()` 和全部 V1 Golden SQL 保持语法层兼容。
-- [x] 所有数据库名、表名、列名、限定符及别名均已规范化为小写。
-- [x] A 的词法和语法错误统一使用 `ParseError(E_SYNTAX)`，位置准确。
-- [x] A 模块 137 项测试全部通过。
-- [x] 已完成 AST 示例、源码说明和对 C 的交接材料。
-- [ ] 项目级回归全部通过：当前由 C 模块尚未适配 V2 `TableRef/Column` 阻塞。
+```python
+DropIndexStmt(index_name="idx_users_id")
+```
+
+V3 明确不支持 `UNIQUE INDEX`、多列组合索引、`IF EXISTS`、`IF NOT EXISTS`
+以及在 `DROP INDEX` 后指定表名。这些输入应返回语法错误，而不是生成近似 AST。
+
+## 五、索引 DDL 文法与错误行为
+
+### 5.1 文法
+
+```ebnf
+createIndexStmt := CREATE INDEX identifier ON identifier
+                   '(' identifier ')'
+dropIndexStmt   := DROP INDEX identifier
+```
+
+该文法与 V2 语法共同存在；V2 的 SELECT、BOOLEAN、JOIN 和表达式规则不变。
+
+### 5.2 必须成功的输入
+
+```sql
+CREATE INDEX idx_users_id ON users (id);
+DROP INDEX idx_users_id;
+```
+
+### 5.3 必须返回 `E_SYNTAX` 的输入
+
+```sql
+CREATE INDEX;
+CREATE INDEX idx;
+CREATE INDEX idx ON users;
+CREATE INDEX idx ON users ();
+DROP INDEX;
+CREATE UNIQUE INDEX idx ON users (id);
+```
+
+错误行列必须来自 Lexer 的全局位置。多语句脚本中第二条索引 DDL 出错时，位置不能
+从第二条语句重新按第一行、第一列计算。
+
+## 六、测试覆盖与验收记录
+
+### 6.1 测试类型
+
+| 测试类型 | 主要测试文件 | 验证内容 |
+|---|---|---|
+| Token 识别 | `tests/A_tests/test_lexer_v3_tokens.py` | 大小写、完整 Token 顺序、lexeme、偏移 |
+| CREATE 分派 | `tests/A_tests/test_parser_v3_create_dispatch.py` | DATABASE/TABLE/INDEX 分支互不干扰 |
+| CREATE INDEX AST | `tests/A_tests/test_parser_v3_create_index.py` | AST 类型、字段和值 |
+| DROP 分派 | `tests/A_tests/test_parser_v3_drop_dispatch.py` | DATABASE/TABLE/INDEX 分支互不干扰 |
+| DROP INDEX AST | `tests/A_tests/test_parser_v3_drop_index.py` | AST 类型、字段和值 |
+| 错误语法和位置 | `tests/A_tests/test_parser_v3_index_errors.py` | `E_SYNTAX` 与全局行列位置 |
+| 多语句与 SourceSpan | `tests/A_tests/test_parser_v3_index_compatibility.py` | 原文、范围、parse 兼容性 |
+| V1/V2 回归 | `tests/A_tests/test_parser_v3_regression.py` | CREATE TABLE 与 V2 SELECT 精确 AST |
+| AST 追踪 | `UI/tests/test_compiler_trace.py` | 索引 AST 进入 A 的追踪阶段 |
+| AST 可视化 | `tests/A_tests/test_ast_tree_adapter.py`、`UI/tests/test_viewer.py` | 树节点、字段和值可视化 |
+| 公共契约 | `tests/test_v3_contract.py` | Contract 3.0、Statement 联合与冻结字段 |
+
+### 6.2 最终验收命令和结果
+
+第一项，验收 A 的全部模块测试：
+
+```bash
+.venv/bin/python -m pytest -q tests/A_tests
+```
+
+结果：`163 passed`。
+
+第二项，验收 V3 公共契约：
+
+```bash
+.venv/bin/python -m pytest -q tests/test_v3_contract.py
+```
+
+结果：`15 passed`。
+
+第三项，验收整个项目的 V1/V2/V3 和 UI 回归：
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+结果：`804 passed`。
+
+最终结论：三项命令退出码均为 0，`CREATE INDEX` 和 `DROP INDEX` 能从 SQL
+正确生成名称已小写化的 AST，A 的 V3 阶段任务已完成。
+
+## 七、A 向 C 的索引 AST 交接
+
+### 7.1 C 应导入的公共节点
+
+```python
+from compiler import parse, parse_script
+from contracts.ast import CreateIndexStmt, DropIndexStmt, Statement
+```
+
+C 应通过 `compiler` 包公开的 `parse` / `parse_script` 入口接收 A 的结果，并只依赖
+`contracts.ast` 中的公共类型；不应从 `compiler.parser` 导入 Parser 内部类或调用
+以下划线开头的解析函数。
+
+### 7.2 CREATE INDEX 交接示例
+
+A 的输入与输出：
+
+```python
+statement = parse("CREATE INDEX Idx_Users_ID ON Users (ID);")
+
+assert statement == CreateIndexStmt(
+    index_name="idx_users_id",
+    table="users",
+    column="id",
+)
+```
+
+C 接收后可按公共节点类型分派：
+
+```python
+match statement:
+    case CreateIndexStmt(index_name=name, table=table, column=column):
+        # C 负责语义检查与执行编排，再通过 BaseStorage 公共接口交给 B。
+        storage.create_index(name, table, column)
+```
+
+字段含义：
+
+- `index_name`：已经小写化的索引名；
+- `table`：已经小写化的目标表名；
+- `column`：已经小写化的单个目标列名。
+
+C 需要按团队契约处理表和列语义；索引是否已经存在是 B 的权威事实，最终由
+`BaseStorage.create_index()` 返回 `E_INDEX_EXISTS` 等存储边界错误。
+
+### 7.3 DROP INDEX 交接示例
+
+A 的输入与输出：
+
+```python
+statement = parse("DROP INDEX Idx_Users_ID;")
+
+assert statement == DropIndexStmt(index_name="idx_users_id")
+```
+
+C 接收后可按公共节点类型分派：
+
+```python
+match statement:
+    case DropIndexStmt(index_name=name):
+        # 索引存在性由 B 判定，C 不维护第二份索引存在状态。
+        storage.drop_index(name)
+```
+
+`DropIndexStmt` 不携带表名和列名。C 不应根据历史 Catalog 快照自行拼接这些字段；
+应把索引名交给 B 的 `drop_index()`，由 B 成功删除或返回 `E_INDEX_NOT_FOUND`。
+
+### 7.4 多语句交接示例
+
+```python
+parsed = parse_script(
+    "CREATE INDEX Idx ON Users (ID);\n"
+    "DROP INDEX Idx;"
+)
+```
+
+`parsed` 中每个 `ParsedStatement` 都包含：
+
+- `statement`：`CreateIndexStmt` 或 `DropIndexStmt`；
+- `sql`：对应语句的原始 SQL；
+- `span`：相对于完整脚本的 `SourceSpan`。
+
+C 在执行脚本时应使用 `statement` 做类型分派，使用 `sql` 和 `span` 做错误展示或
+追踪关联，不应再次对原始字符串执行 `split(";")` 或重新解析名称。
+
+## 八、V3 十二步完成记录
+
+- [x] 步骤一：增加 `KW_INDEX` 和关键字映射。
+- [x] 步骤二：接入 `CreateIndexStmt`、`DropIndexStmt` 与 `Statement` 联合类型。
+- [x] 步骤三：扩展 CREATE 语句分派。
+- [x] 步骤四：实现 `CREATE INDEX` 解析与名称小写化。
+- [x] 步骤五：扩展 DROP 语句分派。
+- [x] 步骤六：实现 `DROP INDEX` 解析与名称小写化。
+- [x] 步骤七：补齐错误语法与全局错误位置。
+- [x] 步骤八：保持 `parse()`、`parse_script()`、原文和 `SourceSpan` 兼容。
+- [x] 步骤九：接入追踪与 AST 可视化。
+- [x] 步骤十：补充 Token、AST、错误、脚本、回归和可视化测试。
+- [x] 步骤十一：完成 A、V3 契约与全项目验收。
+- [x] 步骤十二：更新 A 的 V3 个人文档并提供 C 交接示例。
+
+## 九、最终完成标准
+
+- [x] 文档版本已从 V2 更新为 V3，并以 Contract 3.0 为准。
+- [x] `INDEX/index/Index` 均稳定识别为 `KW_INDEX`。
+- [x] `CREATE INDEX` 生成 `CreateIndexStmt(index_name, table, column)`。
+- [x] `DROP INDEX` 生成 `DropIndexStmt(index_name)`。
+- [x] 索引名、表名和列名进入 AST 前统一转为小写。
+- [x] 非法索引语法返回 `E_SYNTAX`，错误位置准确。
+- [x] `parse()` 与 `parse_script()` 保持兼容，SourceSpan 和原文准确。
+- [x] 索引 AST 已进入追踪和可视化链路，未修改公共追踪契约。
+- [x] A 模块 163 项测试全部通过。
+- [x] V3 公共契约 15 项测试全部通过。
+- [x] 全项目 804 项测试全部通过。
+- [x] 已向 C 提供 `CreateIndexStmt` 与 `DropIndexStmt` 的消费示例和职责边界。
+
+A 的 V3 编译层任务至此完成。后续如扩展 UNIQUE、多列索引、`IF EXISTS` 或新的
+索引语法，必须先更新三方公共契约和 V3/V4 计划，再修改 Token、Parser 与测试。
