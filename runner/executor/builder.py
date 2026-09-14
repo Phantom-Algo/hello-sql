@@ -13,9 +13,11 @@ from runner.logical_plan.base import LogicalPlan
 from runner.logical_plan.builder import DescribeTable
 from runner.logical_plan.plans import (
     LogicalCreateDatabase,
+    LogicalCreateIndex,
     LogicalCreateTable,
     LogicalDelete,
     LogicalDropDatabase,
+    LogicalDropIndex,
     LogicalDropTable,
     LogicalInsert,
     LogicalProjection,
@@ -78,6 +80,8 @@ class ExecutorTreeBuilder:
                 | LogicalUseDatabase()
                 | LogicalCreateTable()
                 | LogicalDropTable()
+                | LogicalCreateIndex()
+                | LogicalDropIndex()
             ):
                 return build_ddl_executor(plan)
             case _:

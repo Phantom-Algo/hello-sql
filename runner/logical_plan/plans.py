@@ -383,6 +383,44 @@ class LogicalDelete(LogicalPlan):
         return EMPTY_SCHEMA
 
 
+# ---------- 索引 DDL 节点 ----------
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalCreateIndex(LogicalPlan):
+    """建索引：叶子节点，目标表与列在绑定期已确认存在。
+
+    是否与既有索引重名属 Storage 的权威状态，本节点不做判定。
+    """
+
+    index_name: str
+    table: str
+    column: str
+
+    @property
+    def children(self) -> tuple[LogicalPlan, ...]:
+        return ()
+
+    @property
+    def output_schema(self) -> LogicalSchema:
+        return EMPTY_SCHEMA
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalDropIndex(LogicalPlan):
+    """删索引：叶子节点，只带索引名（索引名在库内唯一，不需要表名）。"""
+
+    index_name: str
+
+    @property
+    def children(self) -> tuple[LogicalPlan, ...]:
+        return ()
+
+    @property
+    def output_schema(self) -> LogicalSchema:
+        return EMPTY_SCHEMA
+
+
 # ---------- 不变式校验辅助 ----------
 
 
