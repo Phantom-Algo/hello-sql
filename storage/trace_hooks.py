@@ -1,9 +1,14 @@
 """B 模块内部使用的可选、与 UI 类型无关的追踪钩子。
 
-Catalog、Cache、Pager 和 Engine 都位于存储核心，不能反向导入 ``UI``。
+Catalog、Cache、Pager、Engine 与 Index（B+ 树操作）都位于存储核心，
+不能反向导入 ``UI``。
 本模块因此只定义一个普通字典回调和一个装饰器：当 BufferPool 没有安装
 回调时，装饰器直接调用原函数；安装回调后，才记录参数、返回值、异常、
 真实耗时及缓存统计前后值。具体如何冻结、分组和显示完全由 UI 决定。
+
+观察者可以只认自己关心的 ``component``：目前 UI 的存储收集器只归类
+catalog / cache / pager / engine 四类，``index`` 事件会被它忽略——这是
+观察方的选择，B 不会因为事件被忽略而改变任何行为。
 
 生成器需要特别处理：TableEngine.scan 的函数体在迭代时才真正执行，
 所以生成器装饰器把事件结束时间放在迭代完成或报错时，而不是创建迭代器时。
@@ -102,7 +107,8 @@ def trace_storage_operation(
     """创建一个不改变业务签名和异常语义的存储操作装饰器。
 
     Args:
-        component: ``catalog``、``cache``、``pager`` 或 ``engine``。
+        component: ``catalog``、``cache``、``pager``、``engine`` 或 ``index``。
+            未在观察者处登记的 component 只会被忽略，不影响存储行为。
         operation: 可选界面操作名；省略时使用原函数名。
 
     Returns:

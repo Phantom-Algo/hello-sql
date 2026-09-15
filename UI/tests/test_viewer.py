@@ -27,6 +27,30 @@ from UI import (
 )
 
 
+def _loopback_bindable() -> bool:
+    """本机是否允许绑定回环端口。
+
+    查看器只监听 ``127.0.0.1`` 的随机端口，但受限沙箱/CI 会直接拒绝 ``bind``
+    （``PermissionError``：Operation not permitted）。那种环境下这些用例无法
+    得出有效结论，整体跳过；正常环境照常执行。
+    """
+
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+    except OSError:
+        return False
+    return True
+
+
+pytestmark = pytest.mark.skipif(
+    not _loopback_bindable(),
+    reason="当前环境禁止绑定回环端口，查看器用例无法执行（环境限制，非缺陷）",
+)
+
+
 def _inspector_with_trace(tmp_path) -> QueryInspector:
     """执行一条真实 DDL 并返回含完整 A/B/C 记录的 Inspector。"""
 

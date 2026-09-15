@@ -344,6 +344,23 @@ Runner.execute(sql, physical="auto")    → 依统计与索引清单自行选择
 **bench 只做端到端复核**（V3-T8），不承担等价性的一线责任——避免出现"两边都
 以为对方测了"。
 
+### 8.1 验收结果（2026-09-15 收口）
+
+| 编号 | 落地证据 |
+|---|---|
+| V3-T1 | A 的 `tests/A_tests/test_parser_v3_*`；B 的 `storage/tests/test_index_facade_m3.py`；端到端 `tests/test_index_ddl_flow.py` |
+| V3-T2 | `storage/tests/test_index_consistency_m3.py`、`test_index_m8_page_hint.py`（随机写 + 审计器） |
+| V3-T3 | `storage/tests/test_index_facade_m3.py`、`test_index_tree_m2.py`（与 scan 过滤逐行对照） |
+| V3-T4 | `storage/tests/test_stats_m5.py`、`test_stats_m6_extrema.py` |
+| V3-T5 | C 的 `tests/test_optimizer_equivalence.py` |
+| V3-T6 | `tests/test_physical_flow.py`（C）+ `tests/test_auto_extrema_regression.py`（B 的极值回归） |
+| V3-T7 | `tests/test_physical_flow.py`、`tests/test_auto_extrema_regression.py`（三模式行多重集一致） |
+| V3-T8 | `docs/v3-dev/benchmark-report.md` + `bench/results/v3-benchmark.json`（五模式、页读与加速比、错误矩阵、跨模式一致性） |
+| V3-T9 | 全仓 `1314 passed / 5 skipped / 0 failed`（5 条跳过是沙箱禁止绑定回环端口，允许网络的环境下全绿） |
+
+里程碑 M1–M5 全部落地：A 的索引 DDL、B 的索引与统计（含 D47/D48/D49a–c）、
+C 的优化器 + 代价选路 + 强制模式、bench 与对比报告、文档与演示收口。
+
 ## 9. 里程碑与依赖顺序
 
 | 阶段 | 内容 | 退出条件 |

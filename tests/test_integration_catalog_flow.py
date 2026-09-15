@@ -1,8 +1,8 @@
 """三方集成 + 页式 Catalog 观察（根 tests；允许同时 import 三家）。
 
-范围说明：A/C 尚未实现 BOOLEAN/TRUE/FALSE，因此本文件只用当前可跑的 V1
-SQL 子集（INT/TEXT/REAL）验证真实 SQL → AST → 计划/执行 → 页式 Catalog
-全链路；BOOLEAN 的存储链路由 storage/tests 覆盖。
+范围说明：真实 SQL → AST → 计划/执行 → 页式 Catalog 全链路。V2 起
+BOOLEAN/TRUE/FALSE 已贯通到 SQL 层，因此本文件既覆盖 INT/TEXT/REAL，
+也覆盖 BOOLEAN 的建表、插入、过滤、索引与重启恢复。
 """
 
 from __future__ import annotations
@@ -90,6 +90,37 @@ def test_integrated_catalog_lifecycle_and_restart(tmp_path):
     assert Counter(runner2.execute("SELECT * FROM users;").rows) == Counter(
         [(1, "alice", 18.0), (2, "bob", 5.0)]
     )
+
+
+def test_integrated_boolean_column_through_sql_and_index(tmp_path):
+    """BOOLEAN 的 SQL 全链路：建表 → 插入 TRUE/FALSE → 过滤 → 索引 → 重启。"""
+
+    data_dir = str(tmp_path / "data")
+    _server, runner = _server_runner(data_dir)
+    runner.execute("CREATE TABLE flags (id INT, ok BOOLEAN);")
+    runner.execute("INSERT INTO flags VALUES (1, TRUE);")
+    runner.execute("INSERT INTO flags VALUES (2, FALSE);")
+
+    selected = runner.execute("SELECT * FROM flags WHERE ok = TRUE;")
+    assert selected.rows == ((1, True),)
+
+    runner.execute("CREATE INDEX idx_flags_ok ON flags (ok);")
+    assert Counter(runner.execute("SELECT * FROM flags WHERE ok = FALSE;").rows) == Counter(
+        [(2, False)]
+    )
+    forced = runner.execute(
+        "SELECT * FROM flags WHERE ok = TRUE;", physical="index"
+    )
+    assert Counter(forced.rows) == Counter([(1, True)])
+
+    _server2, runner2 = _server_runner(data_dir)
+    assert Counter(runner2.execute("SELECT * FROM flags;").rows) == Counter(
+        [(1, True), (2, False)]
+    )
+    after_restart = runner2.execute(
+        "SELECT * FROM flags WHERE ok = TRUE;", physical="index"
+    )
+    assert Counter(after_restart.rows) == Counter([(1, True)])
 
 
 def test_integrated_drop_recreate_and_reserved_prefix(tmp_path):
