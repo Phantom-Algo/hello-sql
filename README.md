@@ -14,6 +14,29 @@ C=运行（runner/）。所有公共约定已经冻结：
 
 已接通三层真实实现，完整 golden 序列包含 37 条 SQL。
 
+## V3 新增能力（索引 · 代价选路 · 优化器 · 基准）
+
+V3 让数据库**自己挑最省的路走，并且拿得出证据**：
+
+- **索引**：`CREATE INDEX idx ON t (col)` / `DROP INDEX idx`；单列非唯一 B+ 树，
+  与表数据同步维护（insert/update/delete 在同一个公开方法内完成并 flush）；
+- **统计**：`statistics(table)` 返回行数、数据页数与列级统计，其中
+  `min_value` / `max_value` 是**精确边界**、`distinct_count` 是有界采样近似
+  （契约 3.1）；
+- **代价选路**：`auto` 依统计与索引清单比较代价——高选择性走索引、低选择性主动
+  放弃；`seq` / `index` 可强制，命令行 `--physical`、交互中用 `/physical`。
+  强制索引时若目标列没有索引，由存储层抛 `E_INDEX_NOT_FOUND`，**不静默退化**；
+- **逻辑优化器**：常量折叠、AND 展平与 Filter 合并、布尔规范化、JOIN 单侧谓词
+  下推、投影裁剪与冗余节点消除；`Runner.execute(sql, optimize=False)` 可整体关闭；
+- **全链路追踪**：新增「优化器」阶段，`/inspect` 仍只读取最近快照、不重放 SQL；
+- **基准与对比报告**：`python -m bench run` 用五种模式跑同一批查询，产出
+  `docs/v3-dev/benchmark-report.md` 与 `bench/results/*.json`，细节见
+  [bench/README.md](bench/README.md)。
+
+数据目录兼容：V3 的索引文件版本为 2；旧目录里的 v1 索引会在**首次被访问**时
+自动按新格式重建一次（叶条目新增了行所在页号，回表因此不再逐页探测）。
+完整设计与决策记录见 [docs/v3-dev/v3-dev-plan.md](docs/v3-dev/v3-dev-plan.md)。
+
 ## 启动与终端界面
 
 安装后直接运行 `hello-sql`。这是本地数据库终端，启动时打开数据目录，
@@ -87,6 +110,9 @@ hello-sql --data-dir /absolute/path/to/hello-sql/data --database shop
 | `/databases`、`/tables` | 查看数据库 / 当前库的表 |
 | `/describe users` | 查看列名和类型 |
 | `/inspect [ALL\|A\|B\|C]` | 查看最近 SQL 的全链路或指定负责模块 |
+| `/physical [auto\|seq\|index]` | 查看或切换物理访问模式（非 `auto` 时提示符会显示） |
+| `/file path.sql` | 执行 SQL 文件 |
+| `/stop-on-error on\|off` | 多语句遇错时是否继续 |
 | `USE shop;` | 切换库，输入提示符同步更新 |
 | `/clear` | 清屏 |
 | `/quit`、`quit`、`exit`、Ctrl+D | 退出（Ctrl+D 在空输入时） |
