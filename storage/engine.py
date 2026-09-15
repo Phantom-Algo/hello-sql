@@ -321,7 +321,12 @@ class TableEngine:
         return len(self._ensure_layout()[1])
 
     def data_pages(self) -> list[int]:
-        """活动数据页号（升序），供统计采样使用。"""
+        """活动数据页号（升序）：增量维护的布局缓存（D37/D49b）。
+
+        与 `_active_page_numbers()` 逐元素恒等，但后者每次都要读遍所有页去
+        判定"哪页是溢出链页"；本方法只在基线未建立时读一遍，之后 O(1) 取用。
+        扫描、行定位与插入找空间都走这里。
+        """
         return sorted(self._ensure_layout()[1])
 
     @staticmethod
@@ -399,8 +404,9 @@ class TableEngine:
         """在现有数据页里找能放下新记录的一页；没有返回 None。
 
         M4：只遍历不在 free list 的活动页（空闲页前 4 B 是 next 指针）。
+        D49b：页表走增量缓存，不再每次重扫整表判定页类型。
         """
-        for page_no in self._active_page_numbers():
+        for page_no in self.data_pages():
             page = bytearray(read_page(self._pool, self._path, page_no))
             slot_count, _flags, free_ptr = _parse_page_header(page)
             space = PAGE_SIZE - SLOT_SIZE * (slot_count + 1) - free_ptr
@@ -461,7 +467,7 @@ class TableEngine:
             slot_index = self._find_slot_by_row_id(page, row_id)
             if slot_index is not None:
                 return page_no, page, slot_index
-        for page_no in self._active_page_numbers():
+        for page_no in self.data_pages():
             page = bytearray(read_page(self._pool, self._path, page_no))
             slot_index = self._find_slot_by_row_id(page, row_id)
             if slot_index is not None:
@@ -599,7 +605,7 @@ class TableEngine:
     def scan(self) -> Iterator[Row]:
         """逐数据页解码（inline 直解，溢出行沿链拼回），顺带重建映射。"""
         seen_rids: set[RowId] = set()
-        for page_no in self._active_page_numbers():
+        for page_no in self.data_pages():
             page = read_page(self._pool, self._path, page_no)
             for record_offset, record_length, is_overflow in _page_slot_entries(page):
                 if is_overflow:

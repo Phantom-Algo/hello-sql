@@ -77,7 +77,10 @@ def test_physical_pages_merge_cache_pager_events_and_link_back_to_table(tmp_path
     _, data = _select_trace(tmp_path)
     linkage = data["linkage"]
     pages = linkage["pages"]
-    assert {page["page_number"] for page in pages} >= {0, 1}
+    # B 的 D49b（布局遍历只付一次）之后，稳态扫描不再读表头页 0——布局走
+    # 增量缓存，所以这里只要求出现真正的数据页；页 0 是否出现取决于该查询
+    # 是否真的碰到文件头（例如冷进程建基线时）。
+    assert {page["page_number"] for page in pages} >= {1}
 
     data_page = next(page for page in pages if page["page_number"] == 1)
     assert data_page["file_name"] == "users.table"
