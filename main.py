@@ -48,6 +48,15 @@ def build_parser() -> argparse.ArgumentParser:
             "index 强制索引访问（默认 auto）；交互会话中可用 /physical 切换"
         ),
     )
+    parser.add_argument(
+        "--no-trace",
+        action="store_true",
+        help=(
+            "关闭全链路追踪（批量装载/回归脚本用）：不创建 QueryInspector，"
+            "执行语义完全不变，但批量语句会快一个量级；"
+            "交互模式下 /inspect 需要追踪，请勿与 --no-trace 同用"
+        ),
+    )
     try:
         app_version = version("hello-sql")
     except PackageNotFoundError:
@@ -101,6 +110,10 @@ def main(argv: list[str] | None = None) -> int:
     B 路由器注入 DatabaseServer，C 路由器和编排器注入 Runner，
     从而让 ``/inspect`` 能读到与实际 SQL 执行一致的完整记录。
 
+    ``--no-trace`` 时不创建编排器：Server/Runner 都退回无追踪装配。
+    两者执行语义相同（同一套绑定/计划/执行路径），只是不再记录快照——
+    批量装载几千条语句时，追踪快照的开销比真正写数据还大（实测约 30×）。
+
     Returns:
         成功为 0，SQL/输入错误为 1，键盘中断为 130。
     """
@@ -108,16 +121,25 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         data_dir = resolve_data_dir(args.data_dir)
-        inspector = QueryInspector()
-        server = DatabaseServer(data_dir, trace_sink=inspector.storage_router)
-        runner = Runner(
-            server=server,
-            parse=parse,
-            parse_script=parse_script,
-            current_database=args.database.lower(),
-            trace_sink=inspector.execution_router,
-            inspector=inspector,
-        )
+        if args.no_trace:
+            server = DatabaseServer(data_dir)
+            runner = Runner(
+                server=server,
+                parse=parse,
+                parse_script=parse_script,
+                current_database=args.database.lower(),
+            )
+        else:
+            inspector = QueryInspector()
+            server = DatabaseServer(data_dir, trace_sink=inspector.storage_router)
+            runner = Runner(
+                server=server,
+                parse=parse,
+                parse_script=parse_script,
+                current_database=args.database.lower(),
+                trace_sink=inspector.execution_router,
+                inspector=inspector,
+            )
         if args.execute is not None:
             result = runner.execute_script(
                 args.execute,

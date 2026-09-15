@@ -32,10 +32,16 @@ V3 让数据库**自己挑最省的路走，并且拿得出证据**：
 - **基准与对比报告**：`python -m bench run` 用五种模式跑同一批查询，产出
   `docs/v3-dev/benchmark-report.md` 与 `bench/results/*.json`，细节见
   [bench/README.md](bench/README.md)。
+- **演示手册**：`docs/v3-dev/demo/README.md` 把上面这些能力按可复制顺序走了一遍
+  （索引 DDL、DML 同步、优化器、七种选路理由、强制模式、下推、统计、追踪、重启、
+  基准），并附一份取证面板 `v3_showcase_evidence.py` 打印 SQL 层看不到的决策过程。
 
 数据目录兼容：V3 的索引文件版本为 2；旧目录里的 v1 索引会在**首次被访问**时
 自动按新格式重建一次（叶条目新增了行所在页号，回表因此不再逐页探测）。
 完整设计与决策记录见 [docs/v3-dev/v3-dev-plan.md](docs/v3-dev/v3-dev-plan.md)。
+
+批量装载大脚本时加 `--no-trace`：交互模式的 `/inspect` 需要追踪，但追踪快照
+对几千条 `INSERT` 来说比真正写数据还贵（实测 2000 行 40s → 3.2s）。
 
 ## 启动与终端界面
 
@@ -113,6 +119,7 @@ hello-sql --data-dir /absolute/path/to/hello-sql/data --database shop
 | `/physical [auto\|seq\|index]` | 查看或切换物理访问模式（非 `auto` 时提示符会显示） |
 | `/file path.sql` | 执行 SQL 文件 |
 | `/stop-on-error on\|off` | 多语句遇错时是否继续 |
+| `--no-trace`（命令行） | 关闭全链路追踪，批量装载/回归脚本用（执行语义不变） |
 | `USE shop;` | 切换库，输入提示符同步更新 |
 | `/clear` | 清屏 |
 | `/quit`、`quit`、`exit`、Ctrl+D | 退出（Ctrl+D 在空输入时） |

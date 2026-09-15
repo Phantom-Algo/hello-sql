@@ -361,6 +361,12 @@ Runner.execute(sql, physical="auto")    → 依统计与索引清单自行选择
 里程碑 M1–M5 全部落地：A 的索引 DDL、B 的索引与统计（含 D47/D48/D49a–c）、
 C 的优化器 + 代价选路 + 强制模式、bench 与对比报告、文档与演示收口。
 
+演示收口：[docs/v3-dev/demo/README.md](demo/README.md) 是按可复制顺序编排的
+演示手册（11 幕覆盖 F1–F8 与 V3-T1…T9），配 `v3_showcase_load.sql`（2000 行
+夹具）、`v3_showcase_errors.sql`（错误矩阵）与 `v3_showcase_evidence.py`
+（打印 SQL 层看不到的选路理由、优化日志与统计）。手册里的每条预期都由
+`tests/test_demo_showcase.py` 逐条锁死，演示不会随时间腐化。
+
 ## 9. 里程碑与依赖顺序
 
 | 阶段 | 内容 | 退出条件 |
