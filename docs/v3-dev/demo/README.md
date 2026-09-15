@@ -189,7 +189,9 @@ $P --physical index -e "SELECT id FROM events WHERE id = 1999;"
 ### 第 11 幕：基准报告
 
 ```bash
-python -m bench run --rows 2000 --repeat 3
+# 演示用 2000 行；写到临时路径，避免覆盖仓库里 4000 行的正式报告
+python -m bench run --rows 2000 --repeat 3 \
+  --json /tmp/v3-bench.json --markdown /tmp/v3-bench.md
 ```
 
 产物：`docs/v3-dev/benchmark-report.md` 与 `bench/results/v3-benchmark.json`。
@@ -214,8 +216,9 @@ python main.py --no-trace --data-dir /tmp/v3show --continue-on-error \
 # 3) 语法错误的特例（解析期即失败）
 python main.py --no-trace --data-dir /tmp/v3show -e "CREATE UNIQUE INDEX ux ON events (id);"
 
-# 4) 基准
-python -m bench run --rows 2000 --repeat 3
+# 4) 基准（写临时路径，不覆盖仓库里的正式报告）
+python -m bench run --rows 2000 --repeat 3 \
+  --json /tmp/v3-bench.json --markdown /tmp/v3-bench.md
 
 # 5) 全链路追踪（交互，不要加 --no-trace）
 python main.py --data-dir /tmp/v3show
