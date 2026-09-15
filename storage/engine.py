@@ -292,6 +292,10 @@ class TableEngine:
         # 避免 statistics 每次调用都退化成全表扫描。
         self._row_count: int | None = None
         self._data_pages: set[int] | None = None
+        # D49c：插入页提示。语义是"所有比它小的活动数据页都已满（或已释放）"，
+        # 因此插入可以从它起步，不必每次从第 1 页重新扫；任何腾出空间的写入
+        # 都会把它回退到那一页，保证落点仍是"最低可用页"。
+        self._insert_hint: int | None = None
 
     # ---- 内部：统计计数（D37） ----
 
@@ -371,9 +375,13 @@ class TableEngine:
                 yield decode_record(record, self._columns)
 
     def _note_allocated_data_page(self, page_no: int) -> None:
-        """数据页落点：基线已建立才维护，未建立时下次访问会整体重算。"""
+        """数据页落点：基线已建立才维护，未建立时下次访问会整体重算。
+
+        D49c：刚启用（新建或从空闲链表弹出）的页必然有空间，作为插入提示起点。
+        """
         if self._data_pages is not None:
             self._data_pages.add(page_no)
+        self._insert_hint = page_no
 
     def _note_freed_data_page(self, page_no: int) -> None:
         if self._data_pages is not None:
@@ -404,13 +412,23 @@ class TableEngine:
         """在现有数据页里找能放下新记录的一页；没有返回 None。
 
         M4：只遍历不在 free list 的活动页（空闲页前 4 B 是 next 指针）。
-        D49b：页表走增量缓存，不再每次重扫整表判定页类型。
+        D49b：页表走增量缓存；D49c：从 `_insert_hint` 起步——它以下的活动页
+        都已满，纯追加负载下因此每行只需读一页。
         """
-        for page_no in self.data_pages():
+        pages = self.data_pages()
+        start = 0
+        if self._insert_hint is not None:
+            start = len(pages)
+            for index, page_no in enumerate(pages):
+                if page_no >= self._insert_hint:
+                    start = index
+                    break
+        for page_no in pages[start:]:
             page = bytearray(read_page(self._pool, self._path, page_no))
             slot_count, _flags, free_ptr = _parse_page_header(page)
             space = PAGE_SIZE - SLOT_SIZE * (slot_count + 1) - free_ptr
             if space >= record_length:
+                self._insert_hint = page_no
                 return page_no, page
         return None
 
@@ -438,6 +456,10 @@ class TableEngine:
             free_page(self._pool, self._path, page_no)
         else:
             write_page(self._pool, self._path, page_no, page)
+        # 删除或更新收缩都可能让这一页重新有空间：插入提示必须回退到它，
+        # 否则新行会越过空洞，落点语义与改动前不一致（D49c）。
+        if self._insert_hint is not None:
+            self._insert_hint = min(self._insert_hint, page_no)
 
     def _find_slot_by_row_id(
         self, page: bytes | bytearray, row_id: RowId
