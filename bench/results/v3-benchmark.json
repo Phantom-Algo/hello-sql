@@ -1,7 +1,7 @@
 {
   "bench_version": "1",
   "meta": {
-    "generated_at_utc": "2026-09-15T02:11:12+00:00",
+    "generated_at_utc": "2026-09-15T03:05:49+00:00",
     "python": "3.11.15",
     "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
     "data_dir": "bench/.cache/ds-0f34160918fc2da9",
@@ -47,12 +47,12 @@
         "sql-auto": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 3.364,
+            "elapsed_ms_median": 3.309,
             "logical_reads": {
-              "user_table": 10,
+              "user_table": 13,
               "index": 6,
               "syscatalog": 0,
-              "total": 16
+              "total": 19
             },
             "physical_reads": {
               "user_table": 0,
@@ -73,12 +73,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 2.313,
+            "elapsed_ms_median": 2.743,
             "logical_reads": {
-              "user_table": 10,
+              "user_table": 13,
               "index": 4,
               "syscatalog": 0,
-              "total": 14
+              "total": 17
             },
             "physical_reads": {
               "user_table": 0,
@@ -101,12 +101,12 @@
         "sql-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 40.061,
+            "elapsed_ms_median": 35.324,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -127,12 +127,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 42.334,
+            "elapsed_ms_median": 39.896,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -155,12 +155,12 @@
         "sql-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 2.898,
+            "elapsed_ms_median": 3.259,
             "logical_reads": {
-              "user_table": 10,
+              "user_table": 13,
               "index": 6,
               "syscatalog": 0,
-              "total": 16
+              "total": 19
             },
             "physical_reads": {
               "user_table": 0,
@@ -181,12 +181,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 2.789,
+            "elapsed_ms_median": 2.575,
             "logical_reads": {
-              "user_table": 10,
+              "user_table": 13,
               "index": 4,
               "syscatalog": 0,
-              "total": 14
+              "total": 17
             },
             "physical_reads": {
               "user_table": 0,
@@ -209,12 +209,12 @@
         "api-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 18.624,
+            "elapsed_ms_median": 21.833,
             "logical_reads": {
-              "user_table": 113,
+              "user_table": 166,
               "index": 0,
               "syscatalog": 0,
-              "total": 113
+              "total": 166
             },
             "physical_reads": {
               "user_table": 54,
@@ -235,12 +235,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 17.922,
+            "elapsed_ms_median": 16.699,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -263,12 +263,12 @@
         "api-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 7.039,
+            "elapsed_ms_median": 11.375,
             "logical_reads": {
-              "user_table": 90,
+              "user_table": 143,
               "index": 6,
               "syscatalog": 0,
-              "total": 96
+              "total": 149
             },
             "physical_reads": {
               "user_table": 54,
@@ -289,12 +289,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 1.82,
+            "elapsed_ms_median": 2.217,
             "logical_reads": {
-              "user_table": 10,
+              "user_table": 13,
               "index": 4,
               "syscatalog": 0,
-              "total": 14
+              "total": 17
             },
             "physical_reads": {
               "user_table": 0,
@@ -336,12 +336,12 @@
         "sql-auto": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 3.03,
+            "elapsed_ms_median": 2.964,
             "logical_reads": {
-              "user_table": 9,
+              "user_table": 12,
               "index": 6,
               "syscatalog": 0,
-              "total": 15
+              "total": 18
             },
             "physical_reads": {
               "user_table": 0,
@@ -362,12 +362,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 2.097,
+            "elapsed_ms_median": 2.969,
             "logical_reads": {
-              "user_table": 9,
+              "user_table": 12,
               "index": 4,
               "syscatalog": 0,
-              "total": 13
+              "total": 16
             },
             "physical_reads": {
               "user_table": 0,
@@ -390,12 +390,12 @@
         "sql-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 38.482,
+            "elapsed_ms_median": 36.384,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -416,12 +416,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 36.161,
+            "elapsed_ms_median": 40.319,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -444,12 +444,12 @@
         "sql-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 2.527,
+            "elapsed_ms_median": 2.96,
             "logical_reads": {
-              "user_table": 9,
+              "user_table": 12,
               "index": 6,
               "syscatalog": 0,
-              "total": 15
+              "total": 18
             },
             "physical_reads": {
               "user_table": 0,
@@ -470,12 +470,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 2.264,
+            "elapsed_ms_median": 2.092,
             "logical_reads": {
-              "user_table": 9,
+              "user_table": 12,
               "index": 4,
               "syscatalog": 0,
-              "total": 13
+              "total": 16
             },
             "physical_reads": {
               "user_table": 0,
@@ -498,12 +498,12 @@
         "api-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 19.023,
+            "elapsed_ms_median": 24.782,
             "logical_reads": {
-              "user_table": 113,
+              "user_table": 166,
               "index": 0,
               "syscatalog": 0,
-              "total": 113
+              "total": 166
             },
             "physical_reads": {
               "user_table": 54,
@@ -524,12 +524,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 18.002,
+            "elapsed_ms_median": 18.072,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -552,12 +552,12 @@
         "api-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 2.001,
+            "elapsed_ms_median": 1.982,
             "logical_reads": {
-              "user_table": 18,
+              "user_table": 24,
               "index": 6,
               "syscatalog": 0,
-              "total": 24
+              "total": 30
             },
             "physical_reads": {
               "user_table": 6,
@@ -578,12 +578,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 1.555,
+            "elapsed_ms_median": 2.296,
             "logical_reads": {
-              "user_table": 9,
+              "user_table": 12,
               "index": 4,
               "syscatalog": 0,
-              "total": 13
+              "total": 16
             },
             "physical_reads": {
               "user_table": 0,
@@ -625,12 +625,12 @@
         "sql-auto": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 46.519,
+            "elapsed_ms_median": 42.433,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -651,12 +651,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 41.748,
+            "elapsed_ms_median": 37.589,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -679,12 +679,12 @@
         "sql-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 37.371,
+            "elapsed_ms_median": 42.089,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -705,12 +705,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 44.469,
+            "elapsed_ms_median": 38.456,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -733,12 +733,12 @@
         "sql-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 18.697,
+            "elapsed_ms_median": 17.102,
             "logical_reads": {
-              "user_table": 108,
+              "user_table": 111,
               "index": 7,
               "syscatalog": 0,
-              "total": 115
+              "total": 118
             },
             "physical_reads": {
               "user_table": 0,
@@ -759,12 +759,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 16.988,
+            "elapsed_ms_median": 16.868,
             "logical_reads": {
-              "user_table": 108,
+              "user_table": 111,
               "index": 5,
               "syscatalog": 0,
-              "total": 113
+              "total": 116
             },
             "physical_reads": {
               "user_table": 0,
@@ -787,12 +787,12 @@
         "api-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 18.58,
+            "elapsed_ms_median": 24.682,
             "logical_reads": {
-              "user_table": 113,
+              "user_table": 166,
               "index": 0,
               "syscatalog": 0,
-              "total": 113
+              "total": 166
             },
             "physical_reads": {
               "user_table": 54,
@@ -813,12 +813,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 17.685,
+            "elapsed_ms_median": 18.025,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -841,12 +841,12 @@
         "api-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 736.017,
+            "elapsed_ms_median": 461.903,
             "logical_reads": {
-              "user_table": 9368,
+              "user_table": 4717,
               "index": 7,
               "syscatalog": 0,
-              "total": 9375
+              "total": 4724
             },
             "physical_reads": {
               "user_table": 54,
@@ -867,12 +867,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 14.594,
+            "elapsed_ms_median": 14.815,
             "logical_reads": {
-              "user_table": 108,
+              "user_table": 111,
               "index": 5,
               "syscatalog": 0,
-              "total": 113
+              "total": 116
             },
             "physical_reads": {
               "user_table": 0,
@@ -914,12 +914,12 @@
         "sql-auto": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 49.341,
+            "elapsed_ms_median": 46.197,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -940,12 +940,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 55.643,
+            "elapsed_ms_median": 45.018,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -968,12 +968,12 @@
         "sql-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 45.589,
+            "elapsed_ms_median": 45.612,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -994,12 +994,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 45.701,
+            "elapsed_ms_median": 44.101,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1022,12 +1022,12 @@
         "sql-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 527.511,
+            "elapsed_ms_median": 516.593,
             "logical_reads": {
-              "user_table": 3008,
+              "user_table": 3011,
               "index": 41,
               "syscatalog": 0,
-              "total": 3049
+              "total": 3052
             },
             "physical_reads": {
               "user_table": 32,
@@ -1048,12 +1048,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 535.195,
+            "elapsed_ms_median": 504.744,
             "logical_reads": {
-              "user_table": 3008,
+              "user_table": 3011,
               "index": 39,
               "syscatalog": 0,
-              "total": 3047
+              "total": 3050
             },
             "physical_reads": {
               "user_table": 42,
@@ -1076,12 +1076,12 @@
         "api-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 21.127,
+            "elapsed_ms_median": 27.695,
             "logical_reads": {
-              "user_table": 113,
+              "user_table": 166,
               "index": 0,
               "syscatalog": 0,
-              "total": 113
+              "total": 166
             },
             "physical_reads": {
               "user_table": 54,
@@ -1102,12 +1102,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 21.129,
+            "elapsed_ms_median": 20.261,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1130,12 +1130,12 @@
         "api-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 18920.908,
+            "elapsed_ms_median": 8928.998,
             "logical_reads": {
-              "user_table": 232668,
+              "user_table": 88817,
               "index": 41,
               "syscatalog": 0,
-              "total": 232709
+              "total": 88858
             },
             "physical_reads": {
               "user_table": 54,
@@ -1156,12 +1156,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 503.193,
+            "elapsed_ms_median": 472.82,
             "logical_reads": {
-              "user_table": 3008,
+              "user_table": 3011,
               "index": 39,
               "syscatalog": 0,
-              "total": 3047
+              "total": 3050
             },
             "physical_reads": {
               "user_table": 42,
@@ -1203,12 +1203,12 @@
         "sql-auto": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 10.773,
+            "elapsed_ms_median": 9.107,
             "logical_reads": {
-              "user_table": 52,
+              "user_table": 55,
               "index": 6,
               "syscatalog": 0,
-              "total": 58
+              "total": 61
             },
             "physical_reads": {
               "user_table": 0,
@@ -1229,12 +1229,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 9.208,
+            "elapsed_ms_median": 8.745,
             "logical_reads": {
-              "user_table": 52,
+              "user_table": 55,
               "index": 4,
               "syscatalog": 0,
-              "total": 56
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1257,12 +1257,12 @@
         "sql-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 38.02,
+            "elapsed_ms_median": 33.65,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1283,12 +1283,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 34.292,
+            "elapsed_ms_median": 36.469,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1311,12 +1311,12 @@
         "sql-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 10.636,
+            "elapsed_ms_median": 8.958,
             "logical_reads": {
-              "user_table": 52,
+              "user_table": 55,
               "index": 6,
               "syscatalog": 0,
-              "total": 58
+              "total": 61
             },
             "physical_reads": {
               "user_table": 0,
@@ -1337,12 +1337,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 11.289,
+            "elapsed_ms_median": 8.228,
             "logical_reads": {
-              "user_table": 52,
+              "user_table": 55,
               "index": 4,
               "syscatalog": 0,
-              "total": 56
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1365,12 +1365,12 @@
         "api-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 21.459,
+            "elapsed_ms_median": 22.521,
             "logical_reads": {
-              "user_table": 113,
+              "user_table": 166,
               "index": 0,
               "syscatalog": 0,
-              "total": 113
+              "total": 166
             },
             "physical_reads": {
               "user_table": 54,
@@ -1391,12 +1391,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 17.145,
+            "elapsed_ms_median": 16.625,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1419,12 +1419,12 @@
         "api-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 261.82,
+            "elapsed_ms_median": 120.525,
             "logical_reads": {
-              "user_table": 3208,
+              "user_table": 1245,
               "index": 6,
               "syscatalog": 0,
-              "total": 3214
+              "total": 1251
             },
             "physical_reads": {
               "user_table": 54,
@@ -1445,12 +1445,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 10.199,
+            "elapsed_ms_median": 8.12,
             "logical_reads": {
-              "user_table": 52,
+              "user_table": 55,
               "index": 4,
               "syscatalog": 0,
-              "total": 56
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1492,12 +1492,12 @@
         "sql-auto": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 43.119,
+            "elapsed_ms_median": 36.798,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1518,12 +1518,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 39.557,
+            "elapsed_ms_median": 37.657,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1546,12 +1546,12 @@
         "sql-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 47.29,
+            "elapsed_ms_median": 38.598,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1572,12 +1572,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 39.519,
+            "elapsed_ms_median": 35.802,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1600,12 +1600,12 @@
         "sql-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 1.953,
+            "elapsed_ms_median": 2.191,
             "logical_reads": {
-              "user_table": 9,
+              "user_table": 12,
               "index": 0,
               "syscatalog": 0,
-              "total": 9
+              "total": 12
             },
             "physical_reads": {
               "user_table": 0,
@@ -1626,12 +1626,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 7.356,
+            "elapsed_ms_median": 1.556,
             "logical_reads": {
-              "user_table": 9,
+              "user_table": 12,
               "index": 0,
               "syscatalog": 0,
-              "total": 9
+              "total": 12
             },
             "physical_reads": {
               "user_table": 0,
@@ -1654,12 +1654,12 @@
         "api-seq": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 33.954,
+            "elapsed_ms_median": 22.35,
             "logical_reads": {
-              "user_table": 113,
+              "user_table": 166,
               "index": 0,
               "syscatalog": 0,
-              "total": 113
+              "total": 166
             },
             "physical_reads": {
               "user_table": 54,
@@ -1680,12 +1680,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 22.816,
+            "elapsed_ms_median": 16.34,
             "logical_reads": {
-              "user_table": 104,
+              "user_table": 59,
               "index": 0,
               "syscatalog": 0,
-              "total": 104
+              "total": 59
             },
             "physical_reads": {
               "user_table": 0,
@@ -1708,12 +1708,12 @@
         "api-index": {
           "cold": {
             "samples": 3,
-            "elapsed_ms_median": 1.171,
+            "elapsed_ms_median": 1.081,
             "logical_reads": {
-              "user_table": 18,
+              "user_table": 24,
               "index": 0,
               "syscatalog": 0,
-              "total": 18
+              "total": 24
             },
             "physical_reads": {
               "user_table": 6,
@@ -1734,12 +1734,12 @@
           },
           "hot": {
             "samples": 3,
-            "elapsed_ms_median": 0.996,
+            "elapsed_ms_median": 1.354,
             "logical_reads": {
-              "user_table": 9,
+              "user_table": 12,
               "index": 0,
               "syscatalog": 0,
-              "total": 9
+              "total": 12
             },
             "physical_reads": {
               "user_table": 0,
