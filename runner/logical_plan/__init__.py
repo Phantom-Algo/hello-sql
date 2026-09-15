@@ -41,10 +41,13 @@ from runner.logical_plan.expressions import (
 )
 from runner.logical_plan.plans import (
     LogicalCreateDatabase,
+    LogicalCreateIndex,
     LogicalCreateTable,
     LogicalDelete,
     LogicalDropDatabase,
+    LogicalDropIndex,
     LogicalDropTable,
+    LogicalEmpty,
     LogicalFilter,
     LogicalInsert,
     LogicalJoin,
@@ -90,10 +93,13 @@ __all__ = [
     "require_boolean",
     # plans
     "LogicalCreateDatabase",
+    "LogicalCreateIndex",
     "LogicalCreateTable",
     "LogicalDelete",
     "LogicalDropDatabase",
+    "LogicalDropIndex",
     "LogicalDropTable",
+    "LogicalEmpty",
     "LogicalFilter",
     "LogicalInsert",
     "LogicalJoin",

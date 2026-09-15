@@ -135,11 +135,11 @@ def test_successful_join_exposes_complete_pipeline_result_and_linkage(tmp_path: 
     assert trace.error_code is None
     assert [stage.sequence for stage in trace.stages] == list(range(1, 15))
     assert all(
-        stage.status is TraceStatus.SUCCESS
-        for stage in trace.stages
-        if stage.stage_id != "c.optimizer"
+        stage.status is TraceStatus.SUCCESS for stage in trace.stages
     )
-    assert _require_stage(trace, "c.optimizer").status is TraceStatus.DISABLED
+    optimizer = _require_stage(trace, "c.optimizer")
+    assert optimizer.output_snapshot["optimization"]["rounds"] >= 1
+    assert optimizer.output_snapshot["optimization"]["applications"]
     assert trace.result_summary["row_count"] == 1
 
     payload = snapshot.to_dict()

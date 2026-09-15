@@ -119,14 +119,16 @@ c_stages = execution_trace.build_stages()
 
 - Binder：展示表 Schema、列与限定符解析、类型协调、WHERE 和投影；
 - Logical Plan：保留真实的 `LogicalScan/Join/Filter/Projection` 树；
-- Optimizer：当前没有规则实现，明确标记 `DISABLED`；
+- Optimizer：取真实 `OptimizationLog`，输出轮数、是否触顶、逐规则命中数，
+  以及每条规则改写前后的单行计划对照；`optimize=False` 时标记 `DISABLED`；
 - Executor：保留 `SeqScan/Filter/NestedLoopJoin/Projection` 执行树；
 - Runtime：记录每个拉取式算子的产出行数、耗时和最多 5 行样例，
   并区分 SELECT 的返回行数与 DML 的影响行数。
 
-名称或类型绑定失败时，Binder 和 Logical Plan 保留失败事件，
-Executor 和 Runtime 标记 `SKIPPED`。运行时失败则保留已完成的计划
-和 Executor 树。追踪回调自身异常会被隔离，不改变 SQL 结果。
+名称或类型绑定失败时，Binder 和 Logical Plan 保留失败事件，后续阶段
+标记 `SKIPPED`；优化开关显式关闭时 Optimizer 标记 `DISABLED`，两者
+含义不同。运行时失败则保留已完成的计划、优化日志和 Executor 树。
+追踪回调自身异常会被隔离，不改变 SQL 结果。
 
 ## 第六阶段：`/inspect` 与 A/B/C 模块筛选
 
@@ -234,7 +236,7 @@ python -m pytest UI/tests/test_inspection_scenarios.py -q
 | 9 | `b.engine` | B | 行、槽和溢出页链操作 |
 | 10 | `c.binding` | C | 列绑定、歧义和类型检查 |
 | 11 | `c.logical_plan` | C | 初始逻辑计划 |
-| 12 | `c.optimizer` | C | 规则优化；未实现时标记 `DISABLED` |
+| 12 | `c.optimizer` | C | 规则优化：规则命中与改写前后对照；开关关闭时标记 `DISABLED` |
 | 13 | `c.executor` | C | Executor 树构建 |
 | 14 | `c.runtime` | C | JOIN、Filter 和 Projection 行流 |
 | 15 | `c.render` | C | QueryResult 与终端输出 |

@@ -39,6 +39,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="多语句执行时记录错误并继续",
     )
+    parser.add_argument(
+        "--physical",
+        choices=("auto", "seq", "index"),
+        default="auto",
+        help=(
+            "物理访问模式：auto 按代价选路，seq 强制顺序扫描，"
+            "index 强制索引访问（默认 auto）；交互会话中可用 /physical 切换"
+        ),
+    )
     try:
         app_version = version("hello-sql")
     except PackageNotFoundError:
@@ -113,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             result = runner.execute_script(
                 args.execute,
                 stop_on_error=not args.continue_on_error,
+                physical=args.physical,
             )
             return print_script_result(
                 runner,
@@ -123,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             result = runner.execute_file(
                 args.file.expanduser(),
                 stop_on_error=not args.continue_on_error,
+                physical=args.physical,
             )
             return print_script_result(
                 runner,
@@ -134,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             plain=args.plain,
             history=not args.no_history,
             stop_on_error=not args.continue_on_error,
+            physical=args.physical,
         )
     except SqlError as error:
         # Literal text: do not interpret error contents as terminal markup.

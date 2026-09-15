@@ -367,3 +367,143 @@ def test_interactive_prompt_executes_multiline_multistatement_buffer(tmp_path):
     output = stream.getvalue()
     assert "#1/3" in output
     assert "#3/3" in output
+
+
+def setup_indexed_table(tmp_path):
+    """在 CLI 数据目录里建一张带索引的表，返回建表过程的结果。"""
+
+    setup = run_cli(
+        tmp_path,
+        sql=(
+            "CREATE TABLE items (id INT, note TEXT);\n"
+            "CREATE INDEX items_id ON items (id);\n"
+            "INSERT INTO items VALUES (1, 'a');\n"
+            "/quit\n"
+        ),
+    )
+    assert setup.returncode == 0, setup.stderr
+    return setup
+
+
+def prepare_indexed_table(tmp_path, sql="SELECT * FROM items;"):
+    """建表后按给定 SQL 再跑一次，返回可直接断言的 CLI 结果。"""
+
+    setup_indexed_table(tmp_path)
+    return run_cli(tmp_path, sql=f"{sql}\n/quit\n")
+
+
+def test_physical_command_reports_and_switches_mode(tmp_path, capsys):
+    """``/physical`` 无参显示当前值，带参切换；非法取值以 E_BAD_ARG 拒绝。"""
+
+    runner = Runner(DatabaseServer(tmp_path), parse, parse_script=parse_script)
+    session = TerminalSession(runner, plain=True, history=False)
+    assert session.physical == "auto"
+
+    assert session._command("/physical") == (True, False)
+    assert "physical = auto" in capsys.readouterr().out
+
+    assert session._command("/physical index") == (True, False)
+    assert session.physical == "index"
+    assert "physical = index" in capsys.readouterr().out
+
+    with pytest.raises(SqlError) as caught:
+        session._command("/physical bogus")
+    assert caught.value.code == E_BAD_ARG
+
+    with pytest.raises(SqlError) as caught:
+        session._command("/physical index extra")
+    assert caught.value.code == E_BAD_ARG
+
+
+def test_terminal_session_honors_initial_and_changed_physical_mode(tmp_path, capsys):
+    """会话初值与 ``/physical`` 都要真正作用到语句执行上，而不是只改显示。"""
+
+    runner = Runner(DatabaseServer(tmp_path), parse, parse_script=parse_script)
+    runner.execute("CREATE TABLE items (id INT, note TEXT)")
+    runner.execute("CREATE INDEX items_id ON items (id)")
+    runner.execute("INSERT INTO items VALUES (1, 'a')")
+
+    forced = TerminalSession(runner, plain=True, history=False, physical="index")
+    # 无谓词查询在 index 模式下必须报错，证明初值真的生效
+    assert forced._execute_input("SELECT * FROM items;") is True
+    assert "[E_BAD_ARG]" in capsys.readouterr().out
+
+    switching = TerminalSession(runner, plain=True, history=False)
+    assert switching._execute_input("SELECT * FROM items;") is False
+    assert "[E_BAD_ARG]" not in capsys.readouterr().out
+    switching._command("/physical index")
+    assert switching._execute_input("SELECT * FROM items;") is True
+    assert "[E_BAD_ARG]" in capsys.readouterr().out
+
+
+def test_invalid_initial_physical_mode_is_rejected(tmp_path):
+    """非法初值应在进入终端前就失败，不让整场会话静默跑错模式。"""
+
+    runner = Runner(DatabaseServer(tmp_path), parse, parse_script=parse_script)
+    with pytest.raises(SqlError) as caught:
+        TerminalSession(runner, plain=True, history=False, physical="fast")
+    assert caught.value.code == E_BAD_ARG
+
+
+def test_physical_completion_offers_only_supported_modes(tmp_path):
+    """``/physical`` 参数位应只提示 auto/seq/index 三个合法值。"""
+
+    runner = Runner(DatabaseServer(tmp_path), parse, parse_script=parse_script)
+    completer = SqlCompleter(runner)
+
+    def choices(text):
+        return [c.text for c in completer.get_completions(Document(text), CompleteEvent())]
+
+    assert choices("/physical ") == ["auto", "index", "seq"]
+    assert choices("/physical s") == ["seq"]
+
+
+def test_prompt_shows_forced_mode_but_stays_clean_for_auto(tmp_path):
+    """强制模式下提示符带模式标记，auto 模式保持原有格式。"""
+
+    runner = Runner(DatabaseServer(tmp_path), parse, parse_script=parse_script)
+    auto_session = TerminalSession(runner, plain=True, history=False)
+    forced_session = TerminalSession(runner, plain=True, history=False, physical="seq")
+
+    assert auto_session._prompt_label("❯") == "main ❯ "
+    assert auto_session._prompt_label(">") == "main> "
+    assert forced_session._prompt_label("❯") == "main [seq] ❯ "
+    assert forced_session._prompt_label(">") == "main [seq]> "
+
+
+def test_file_command_inherits_session_physical_mode(tmp_path):
+    """``/file`` 必须沿用会话模式，否则强制模式会被文件执行绕过。"""
+
+    sql_file = tmp_path / "no_predicate.sql"
+    sql_file.write_text("SELECT * FROM items;\n", encoding="utf-8")
+    setup_indexed_table(tmp_path)
+
+    result = run_cli(
+        tmp_path,
+        sql=f'/physical index\n/file "{sql_file}"\n/quit\n',
+    )
+
+    assert result.returncode == 1
+    assert "physical = index" in result.stdout
+    assert "[E_BAD_ARG]" in result.stdout
+
+
+def test_cli_physical_flag_reaches_interactive_session(tmp_path):
+    """``--physical`` 在 TUI 下不再被静默忽略。"""
+
+    refused = prepare_indexed_table(tmp_path)
+    assert refused.returncode == 0, refused.stderr
+    assert "id\tnote\n1\ta\n" in refused.stdout
+
+    forced = run_cli(tmp_path, "--physical", "index", sql="SELECT * FROM items;\n/quit\n")
+    assert forced.returncode == 1
+    assert "[E_BAD_ARG]" in forced.stdout
+
+    pushable = run_cli(
+        tmp_path,
+        "--physical",
+        "index",
+        sql="SELECT * FROM items WHERE id = 1;\n/quit\n",
+    )
+    assert pushable.returncode == 0, pushable.stderr
+    assert "id\tnote\n1\ta\n" in pushable.stdout

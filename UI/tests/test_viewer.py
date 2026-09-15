@@ -46,9 +46,9 @@ def _inspector_with_trace(tmp_path) -> QueryInspector:
 def _compiler_only_snapshot(sql: str) -> InspectionSnapshot:
     """把一次成功 A 编译追踪包装成查看器可读取的只读快照。
 
-    B/C 尚未实现 V3 索引执行时，A 的 AST 可视化仍可独立验收。该辅助函数
-    只使用 trace_parse 已产生的真实四阶段记录构造 QueryTrace，不补造运行、
-    存储事件，也不修改公共追踪契约。
+    该辅助函数只做 A 阶段编译，因此 A 的 AST 可视化可以脱离运行、
+    存储阶段独立验收。它只使用 trace_parse 已产生的真实四阶段记录
+    构造 QueryTrace，不补造运行、存储事件，也不修改公共追踪契约。
 
     Args:
         sql: 需要在查看器 NODES 面板中验证的单条索引 DDL。

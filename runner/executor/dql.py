@@ -1,9 +1,11 @@
 """DQL 执行器：把 Projection/Filter/Join/Scan 计划树转换为拉取式行流水线。
 
-- SeqScanExecutor：读取 Storage 的整表行；
+- SeqScanExecutor：读取 Storage 的整表行，按 source_indexes 投影到声明的列；
+- IndexScanExecutor：按索引请求取行，行形状与顺序扫描完全一致；
 - FilterExecutor：按谓词过滤，命中行原样下传；
 - NestedLoopJoinExecutor：拼接左右行并按 ON 谓词筛选；
 - ProjectionExecutor：按投影列重排行值；
+- EmptyExecutor：恒零行，不访问 Storage；
 - SelectExecutor：把行流水线物化为 QueryResult。
 """
 
@@ -12,27 +14,55 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from contracts.errors import (
+    E_BAD_ARG,
+    E_COLUMN_NOT_FOUND,
+    E_INDEX_NOT_FOUND,
+    SqlError,
+)
 from contracts.result import QueryResult
+from contracts.storage import Row
 from runner.executor.base import RowExecutor, StatementExecutor
 from runner.executor.context import ExecutionContext
 from runner.executor.row import ExecRow
 from runner.logical_plan.base import LogicalPlan, LogicalSchema
-from runner.logical_plan.expressions import BoundColumnRef, BoundExpr, eval_expr
+from runner.logical_plan.builder import DescribeTable
+from runner.logical_plan.expressions import (
+    BoundColumnRef,
+    BoundExpr,
+    BoundLogical,
+    LogicOp,
+    eval_expr,
+)
 from runner.logical_plan.plans import (
+    LogicalEmpty,
     LogicalFilter,
     LogicalJoin,
     LogicalProjection,
     LogicalScan,
 )
+from runner.physical.planner import AccessPath, BuildContext
+from runner.physical.requests import IndexLookup, IndexRequest
 from runner.trace_hooks import trace_runner_operation
 
 
 @dataclass(frozen=True, slots=True)
 class SeqScanExecutor(RowExecutor):
-    """顺序扫描一张表，输出 Storage 中的完整行。"""
+    """顺序扫描一张表，按 source_indexes 从 Storage 的整行中取出声明输出列。
+
+    source_indexes[i] 是第 i 个输出列在 storage.scan() 行元组中的位置，
+    是执行期下标，与 LogicalColumn.index（裁剪后元组中的位置）是两套下标。
+    未裁剪时它是 (0, 1, ..., n-1)，输出与整行逐值相同。
+
+    例如：
+    users(id, name, age, gender)，但是裁剪后只剩下 name 与 gender
+    但是由于 storage.scan() 返回的是整行数据，因此需要通过 source_indexes 将原始数据映射为在执行器树中要输入的数据
+    在本例子中，source_indexes 应该为 (1, 3)，表示第 0 个位置的数据映射到原始数据的第 1 个，即 name，gender 同理。
+    """
 
     table: str
     schema: LogicalSchema
+    source_indexes: tuple[int, ...]
 
     @property
     def output_schema(self) -> LogicalSchema:
@@ -42,11 +72,98 @@ class SeqScanExecutor(RowExecutor):
 
     @trace_runner_operation("runtime", "seq_scan.rows")
     def rows(self, context: ExecutionContext) -> Iterator[ExecRow]:
-        """惰性扫描整表，把 Storage Row 转换为保留 row_id 的 ExecRow。"""
-
-        # Storage.scan 的 values 顺序与 LogicalScan.schema.columns 顺序一致
         for row_id, values in context.storage.scan(self.table):
-            yield ExecRow(row_id=row_id, values=values)
+            yield ExecRow(
+                row_id=row_id,
+                values=tuple(values[index] for index in self.source_indexes),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class IndexScanExecutor(RowExecutor):
+    """按索引请求取行：行形状与 SeqScanExecutor 完全一致。
+
+    requests 是按优先级排列的候选请求，执行器逐个交给 Storage；C 从不判断索引
+    是否存在，只是多问一次 Storage。row_id 是 B 的物理行把手，UPDATE / DELETE
+    的索引扫描路径可以原样把它交给 update_row / delete_row。
+    """
+
+    table: str
+    schema: LogicalSchema
+    source_indexes: tuple[int, ...]
+    requests: tuple[IndexRequest, ...]
+
+    @property
+    def output_schema(self) -> LogicalSchema:
+        """返回物理表的完整绑定 Schema，其顺序与 Storage 行值一致。"""
+
+        return self.schema
+
+    @trace_runner_operation("runtime", "index_scan.rows")
+    def rows(self, context: ExecutionContext) -> Iterator[ExecRow]:
+        for row_id, values in self._fetch(context):
+            yield ExecRow(
+                row_id=row_id,
+                values=tuple(values[index] for index in self.source_indexes),
+            )
+
+    def _fetch(self, context: ExecutionContext) -> Iterator[Row]:
+        """按优先级尝试候选请求；只有 E_INDEX_NOT_FOUND 才回退，其余错误直接上抛。"""
+
+        if not self.requests:
+            raise SqlError(
+                E_BAD_ARG,
+                f"index scan on {self.table} requires at least one index request",
+            )
+        failure: SqlError | None = None
+        for request in self.requests:
+            yielded = False
+            try:
+                for row in self._request_rows(context, request):
+                    yielded = True
+                    yield row
+            except SqlError as error:
+                # 已经产出过行说明索引存在，此处的错误与"候选无索引"无关
+                if error.code != E_INDEX_NOT_FOUND or yielded:
+                    raise
+                failure = error
+                continue
+            return
+        assert failure is not None
+        # 全部候选都没有索引：把 Storage 的错误原样上抛，索引存在性始终由 B 判定
+        raise failure
+
+    def _request_rows(
+        self,
+        context: ExecutionContext,
+        request: IndexRequest,
+    ) -> Iterator[Row]:
+        """调用 Storage 的索引接口；类型不符等错误同样在这里直接抛出。"""
+
+        if isinstance(request, IndexLookup):
+            return context.storage.index_lookup(self.table, request.column, request.key)
+        return context.storage.index_range(
+            self.table,
+            request.column,
+            request.lower,
+            request.upper,
+            lower_inclusive=request.lower_inclusive,
+            upper_inclusive=request.upper_inclusive,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EmptyExecutor(RowExecutor):
+    """恒零行、零副作用：不访问 Storage，只承载输出 Schema 供表头使用。"""
+
+    schema: LogicalSchema
+
+    @property
+    def output_schema(self) -> LogicalSchema:
+        return self.schema
+
+    def rows(self, context: ExecutionContext) -> Iterator[ExecRow]:
+        return iter(())
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,30 +275,46 @@ class SelectExecutor(StatementExecutor):
 # ---------- 构建 ----------
 
 
-def build_row_executor(plan: LogicalPlan) -> RowExecutor:
-    """把逻辑计划递归转换为行执行器；UPDATE/DELETE 也用它构建 Scan/Filter child。"""
+def build_row_executor(
+    plan: LogicalPlan,
+    context: BuildContext,
+) -> RowExecutor:
+    """把逻辑计划递归转换为行执行器；UPDATE/DELETE 也用它构建 Scan/Filter child。
+
+    context.describe 用于在构建期取表完整列序，定位裁剪后 Scan 的输出列；
+    context.planner 用于在构建期为每个 Scan 选出一条物理访问路径。
+    """
     match plan:
         case LogicalScan():
-            return SeqScanExecutor(
-                table=plan.table,
-                schema=plan.output_schema,
-            )
+            # 无谓词的裸扫描也要进选路：语句级判定需要看到每一个扫描位置
+            return build_scan_executor(plan, context.planner.plan_scan(plan, ()), context)
+        case LogicalEmpty():
+            return EmptyExecutor(schema=plan.output_schema)
         case LogicalFilter():
-            return FilterExecutor(
-                predicate=plan.predicate,
-                child=build_row_executor(plan.child),
+            terms, scan, inner_filters = _split_filter_chain(plan)
+            if scan is None:
+                return FilterExecutor(
+                    predicate=plan.predicate,
+                    child=build_row_executor(plan.child, context),
+                )
+            executor = build_scan_executor(
+                scan, context.planner.plan_scan(scan, terms), context
             )
+            # 被展开的内层 Filter 原样重建：谓词一条都不删，正确性由 Filter 兜底
+            for layer in reversed(inner_filters):
+                executor = FilterExecutor(predicate=layer.predicate, child=executor)
+            return FilterExecutor(predicate=plan.predicate, child=executor)
         case LogicalJoin():
             return NestedLoopJoinExecutor(
-                left=build_row_executor(plan.left),
-                right=build_row_executor(plan.right),
+                left=build_row_executor(plan.left, context),
+                right=build_row_executor(plan.right, context),
                 on=plan.on,
                 schema=plan.output_schema,
             )
         case LogicalProjection():
             return ProjectionExecutor(
                 columns=plan.columns,
-                child=build_row_executor(plan.child),
+                child=build_row_executor(plan.child, context),
                 schema=plan.output_schema,
             )
         case _:
@@ -190,6 +323,87 @@ def build_row_executor(plan: LogicalPlan) -> RowExecutor:
             )
 
 
-def build_select_executor(plan: LogicalProjection) -> SelectExecutor:
+def build_scan_executor(
+    scan: LogicalScan,
+    path: AccessPath,
+    context: BuildContext,
+) -> RowExecutor:
+    """按 AccessPath 构造 Scan 执行器：有索引请求走索引，否则顺序扫描。"""
+
+    source_indexes = _scan_source_indexes(
+        scan.table, scan.output_schema, context.describe
+    )
+    if path.requests:
+        return IndexScanExecutor(
+            table=scan.table,
+            schema=scan.output_schema,
+            source_indexes=source_indexes,
+            requests=path.requests,
+        )
+    return SeqScanExecutor(
+        table=scan.table,
+        schema=scan.output_schema,
+        source_indexes=source_indexes,
+    )
+
+
+def build_select_executor(
+    plan: LogicalProjection,
+    context: BuildContext,
+) -> SelectExecutor:
     """SELECT 语句级执行器的构建入口。"""
-    return SelectExecutor(root=build_row_executor(plan))
+    return SelectExecutor(root=build_row_executor(plan, context))
+
+
+def _split_filter_chain(
+    plan: LogicalFilter,
+) -> tuple[tuple[BoundExpr, ...], LogicalScan | None, tuple[LogicalFilter, ...]]:
+    """沿 Filter 链向下收集全部 conjuncts，只在其末端是 Scan 时给出候选位置。
+
+    返回（全部 conjuncts、末端 Scan 或 None、被展开的内层 Filter）。优化器的
+    Filter 合并规则让链式 Filter 实际不会出现，这里展开是为了让"候选看得到
+    全部条件"不依赖优化器是否开启。
+    """
+    terms: list[BoundExpr] = []
+    layers: list[LogicalFilter] = []
+    node: LogicalPlan = plan
+    while isinstance(node, LogicalFilter):
+        terms.extend(_conjuncts(node.predicate))
+        layers.append(node)
+        node = node.child
+    if not isinstance(node, LogicalScan):
+        return (), None, ()
+    return tuple(terms), node, tuple(layers[1:])
+
+
+def _conjuncts(predicate: BoundExpr) -> tuple[BoundExpr, ...]:
+    """展开同层 AND，取到可直接翻译的 conjunct 列表。"""
+    if isinstance(predicate, BoundLogical) and predicate.op is LogicOp.AND:
+        terms: list[BoundExpr] = []
+        for term in predicate.terms:
+            terms.extend(_conjuncts(term))
+        return tuple(terms)
+    return (predicate,)
+
+
+def _scan_source_indexes(
+    table: str,
+    schema: LogicalSchema,
+    describe_table: DescribeTable,
+) -> tuple[int, ...]:
+    """按表完整列序定位每个输出列在 storage.scan() 行元组中的位置。
+
+    裁剪后的 Scan.schema 是表 Schema 的子序列，两者的列名一致，因此按列名反查
+    即可；列名在表内唯一（存储层拒绝重名列）。
+    """
+    positions = {
+        column.name: index
+        for index, column in enumerate(describe_table(table).columns)
+    }
+    try:
+        return tuple(positions[column.name] for column in schema.columns)
+    except KeyError as missing:
+        raise SqlError(
+            E_COLUMN_NOT_FOUND,
+            f"column not found in table {table}: {missing.args[0]}",
+        ) from None

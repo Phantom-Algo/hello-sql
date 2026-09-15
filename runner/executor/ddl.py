@@ -1,7 +1,8 @@
-"""DDL 执行器：消费五种命令计划，成功时统一返回 affected_rows=0。
+"""DDL 执行器：消费七种命令计划，成功时统一返回 affected_rows=0。
 
 - 数据库级：建库 / 删库 / 切换库，作用于 context.server；
-- 表级：建表 / 删表，作用于 context.storage（即当前数据库）。
+- 表级：建表 / 删表，作用于 context.storage（即当前数据库）；
+- 索引级：建索引 / 删索引，同样作用于当前数据库，存在性由 Storage 判定。
 """
 
 from __future__ import annotations
@@ -16,8 +17,10 @@ from runner.executor.base import StatementExecutor
 from runner.executor.context import ExecutionContext
 from runner.logical_plan.plans import (
     LogicalCreateDatabase,
+    LogicalCreateIndex,
     LogicalCreateTable,
     LogicalDropDatabase,
+    LogicalDropIndex,
     LogicalDropTable,
     LogicalUseDatabase,
 )
@@ -58,6 +61,39 @@ class DropTableExecutor(StatementExecutor):
         """从当前数据库删除表与其目录记录，存储错误原样传播。"""
 
         context.storage.drop_table(self.table)
+        return _ddl_success()
+
+
+# ---------- 索引 DDL ----------
+
+
+@dataclass(frozen=True, slots=True)
+class CreateIndexExecutor(StatementExecutor):
+    """建索引：目标表与列已在绑定期确认，重名由 Storage 判定。"""
+
+    index_name: str
+    table: str
+    column: str
+
+    @trace_runner_operation("runtime", "create_index.execute")
+    def execute(self, context: ExecutionContext) -> QueryResult:
+        """在当前数据库的目标表上建立单列索引，错误码原样传播。"""
+
+        context.storage.create_index(self.index_name, self.table, self.column)
+        return _ddl_success()
+
+
+@dataclass(frozen=True, slots=True)
+class DropIndexExecutor(StatementExecutor):
+    """删索引：C 不预检索引是否存在。"""
+
+    index_name: str
+
+    @trace_runner_operation("runtime", "drop_index.execute")
+    def execute(self, context: ExecutionContext) -> QueryResult:
+        """删除当前数据库中的索引，E_INDEX_NOT_FOUND 原样传播。"""
+
+        context.storage.drop_index(self.index_name)
         return _ddl_success()
 
 
@@ -123,6 +159,8 @@ DdlPlan: TypeAlias = (
     | LogicalUseDatabase
     | LogicalCreateTable
     | LogicalDropTable
+    | LogicalCreateIndex
+    | LogicalDropIndex
 )
 
 
@@ -139,5 +177,9 @@ def build_ddl_executor(plan: DdlPlan) -> StatementExecutor:
             return CreateTableExecutor(plan.table, plan.columns)
         case LogicalDropTable():
             return DropTableExecutor(plan.table)
+        case LogicalCreateIndex():
+            return CreateIndexExecutor(plan.index_name, plan.table, plan.column)
+        case LogicalDropIndex():
+            return DropIndexExecutor(plan.index_name)
         case _:
             assert_never(plan)

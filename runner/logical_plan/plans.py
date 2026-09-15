@@ -185,6 +185,31 @@ class LogicalJoin(LogicalPlan):
         return self.schema
 
 
+@dataclass(frozen=True, slots=True)
+class LogicalEmpty(LogicalPlan):
+    """恒零行叶子：规则证明某个子树必然零行后用它替换该子树。
+
+    两条硬要求：
+    - schema 必须携带且与被替换子树同构：上层节点的列引用仍按旧的 index 编写，
+      _check_column 会按 schema.columns[col.index] 校验；不带同构 Schema 时
+      `SELECT * FROM t WHERE FALSE` 会在构造 Projection 时报错，而不是返回
+      “有表头、零行”；
+    - 它同时是可执行节点（EmptyExecutor）。把 Empty 沿树向上塌陷（JOIN 任一侧为
+      Empty → 整个 JOIN 为 Empty）是优化规则的职责，不是本节点的语义：规则没跑到
+      那一步时，计划照常执行且结果正确。
+    """
+
+    schema: LogicalSchema
+
+    @property
+    def children(self) -> tuple[LogicalPlan, ...]:
+        return ()
+
+    @property
+    def output_schema(self) -> LogicalSchema:
+        return self.schema
+
+
 # ---------- 数据库命令节点 ----------
 
 
@@ -352,6 +377,44 @@ class LogicalDelete(LogicalPlan):
     @property
     def children(self) -> tuple[LogicalPlan, ...]:
         return (self.child,)
+
+    @property
+    def output_schema(self) -> LogicalSchema:
+        return EMPTY_SCHEMA
+
+
+# ---------- 索引 DDL 节点 ----------
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalCreateIndex(LogicalPlan):
+    """建索引：叶子节点，目标表与列在绑定期已确认存在。
+
+    是否与既有索引重名属 Storage 的权威状态，本节点不做判定。
+    """
+
+    index_name: str
+    table: str
+    column: str
+
+    @property
+    def children(self) -> tuple[LogicalPlan, ...]:
+        return ()
+
+    @property
+    def output_schema(self) -> LogicalSchema:
+        return EMPTY_SCHEMA
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalDropIndex(LogicalPlan):
+    """删索引：叶子节点，只带索引名（索引名在库内唯一，不需要表名）。"""
+
+    index_name: str
+
+    @property
+    def children(self) -> tuple[LogicalPlan, ...]:
+        return ()
 
     @property
     def output_schema(self) -> LogicalSchema:

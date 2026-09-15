@@ -33,6 +33,7 @@ from UI.trace_models import (
 )
 
 if TYPE_CHECKING:
+    from runner.physical import PhysicalMode
     from runner.runner import Runner
     from UI.viewer import InspectionViewer
 
@@ -172,12 +173,22 @@ class QueryInspector:
 
         return self._execution_router
 
-    def execute(self, runner: Runner, sql: str) -> QueryResult:
+    def execute(
+        self,
+        runner: Runner,
+        sql: str,
+        *,
+        optimize: bool = True,
+        physical: PhysicalMode = "auto",
+    ) -> QueryResult:
         """追踪并执行一条与 ``Runner.execute`` 兼容的 SQL。
 
         A 在同一次解析中产生 AST 和四个编译阶段；解析成功后才打开
         B/C 捕获并执行该 AST。语法或运行错误会在发布 FAILED 追踪后
         按原类型重新抛出，不改变 Runner 公开契约。
+
+        optimize 与 physical 由 Runner 校验后透传给真实执行路径，本方法
+        不改写它们，追踪阶段因此与实际执行落在同一个开关状态上。
         """
 
         compiled = trace_parse(sql)
@@ -192,6 +203,8 @@ class QueryInspector:
             statement_index=1,
             statement_count=1,
             input_sql=sql,
+            optimize=optimize,
+            physical=physical,
         )
         if error is not None:
             raise error
@@ -204,6 +217,8 @@ class QueryInspector:
         sql: str,
         *,
         stop_on_error: bool = True,
+        optimize: bool = True,
+        physical: PhysicalMode = "auto",
     ) -> ScriptResult:
         """只解析一次脚本，逐条执行并发布查询追踪。
 
@@ -211,6 +226,8 @@ class QueryInspector:
             runner: 实际执行已解析 AST 的会话 Runner。
             sql: 可包含多条语句的完整 SQL 原文。
             stop_on_error: 绑定或执行错误后是否停止后续语句。
+            optimize: 逐条语句生效的优化器开关，本方法不改写它。
+            physical: 逐条语句生效的物理模式，本方法不改写它。
 
         Returns:
             与 ``Runner.execute_script`` 完全一致的逐语句结果。
@@ -235,6 +252,8 @@ class QueryInspector:
                 statement_index=index,
                 statement_count=len(statements),
                 input_sql=sql,
+                optimize=optimize,
+                physical=physical,
             )
             results.append(
                 StatementResult(
@@ -348,11 +367,13 @@ class QueryInspector:
         statement_index: int,
         statement_count: int,
         input_sql: str,
+        optimize: bool = True,
+        physical: PhysicalMode = "auto",
     ) -> tuple[QueryResult | None, SqlError | None, float]:
         """执行已解析语句，合并 A/B/C 阶段并发布最终记录。
 
         B 和 C 的 capture 在调用 ``Runner._execute_statement`` 之前同时开启，
-        所以收集的是这条语句的真实存储、绑定、计划和执行事件。
+        所以收集的是这条语句的真实存储、绑定、计划、优化和执行事件。
         可预期 SqlError 转为 FAILED 追踪后返回；非 SQL 异常会取消未发布
         预约并原样上抛，防止 TraceHub 留下假的运行中记录。
         """
@@ -368,7 +389,11 @@ class QueryInspector:
             with self._storage_router.capture() as storage_collector:
                 with self._execution_router.capture() as execution_collector:
                     try:
-                        result = runner._execute_statement(parsed.statement)
+                        result = runner._execute_statement(
+                            parsed.statement,
+                            optimize=optimize,
+                            physical=physical,
+                        )
                     except SqlError as caught:
                         error = caught
         except BaseException:

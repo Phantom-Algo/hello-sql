@@ -8,10 +8,15 @@ Runner、LogicalPlanBuilder 和 Executor 属于查询编排核心，不应为了
 行执行器的 ``rows`` 是惰性生成器，所以必须把追踪生命周期延长到
 实际迭代结束。生成器只保留前五条样例，但始终计算完整产出行数，
 既能展示数据流又不会让查询历史随结果集无限增长。
+
+开关关闭的功能没有可观察的调用，因此无法由装饰器上报。
+``emit_disabled_operation`` 专门为这种情况提交一条占位记录，
+让查看器把「被显式关闭」与「上游失败没跑」区分开。
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from functools import wraps
 from inspect import isgeneratorfunction
@@ -27,7 +32,9 @@ RunnerTraceSink = Callable[[RunnerTracePayload], None]
 
 _T = TypeVar("_T")
 _SAMPLE_LIMIT = 5
-_COMPONENTS = frozenset({"binding", "logical_plan", "executor", "runtime"})
+_COMPONENTS = frozenset(
+    {"binding", "logical_plan", "optimizer", "executor", "runtime"}
+)
 
 
 def _find_sink(
@@ -112,22 +119,96 @@ def _emit(sink: RunnerTraceSink, payload: RunnerTracePayload) -> None:
 
 
 def _result_metrics(result: object) -> dict[str, object]:
-    """Extract exact row counts from a QueryResult before UI snapshot limits.
+    """提取返回值中不随追踪快照截断而丢失的精确指标。
 
-    Duck typing keeps this low-level hook independent from contracts.result.
-    Only the public QueryResult shape is recognized; other return values do
-    not receive fabricated metrics.
+    用类型名做鸭子判定，使这个底层钩子不依赖 contracts.result 与优化器模块。
+    只识别 QueryResult 与 OptimizationLog 两种公开形状，其余返回值不会被
+    编造出指标。
     """
 
-    if type(result).__name__ != "QueryResult":
-        return {}
-    columns = getattr(result, "columns", None)
-    rows = getattr(result, "rows", None)
+    name = type(result).__name__
+    if name == "QueryResult":
+        columns = getattr(result, "columns", None)
+        rows = getattr(result, "rows", None)
+        return {
+            "column_count": len(columns) if columns is not None else 0,
+            "returned_rows": len(rows) if rows is not None else 0,
+            "affected_rows": getattr(result, "affected_rows", None),
+        }
+    if name == "OptimizationLog":
+        return _optimization_metrics(result)
+    return {}
+
+
+def _optimization_metrics(log: object) -> dict[str, object]:
+    """把 OptimizationLog 摊平成规则命中摘要。
+
+    规则明细由规则自己产出（``plan_before`` / ``plan_after`` 是紧凑单行表示），
+    驱动层与追踪层都不反推规则语义；这里只做汇总，使查看器无需解析计划快照。
+    """
+
+    applications = tuple(getattr(log, "applications", ()) or ())
     return {
-        "column_count": len(columns) if columns is not None else 0,
-        "returned_rows": len(rows) if rows is not None else 0,
-        "affected_rows": getattr(result, "affected_rows", None),
+        "rounds": getattr(log, "rounds", 0),
+        "hit_limit": bool(getattr(log, "hit_limit", False)),
+        "application_count": len(applications),
+        "rule_hits": dict(Counter(item.rule for item in applications)),
+        "applications": [
+            {
+                "rule": item.rule,
+                "summary": item.summary,
+                "plan_before": item.plan_before,
+                "plan_after": item.plan_after,
+            }
+            for item in applications
+        ],
     }
+
+
+def emit_disabled_operation(
+    sink: RunnerTraceSink | None,
+    component: str,
+    operation: str,
+    *,
+    reason: str,
+) -> None:
+    """为「功能被显式关闭」的阶段提交一条占位记录。
+
+    开关关闭时原函数根本不会被调用，装饰器因此没有可上报的调用。
+    这条记录只陈述阶段没有运行的真实原因，让查看器把该阶段标为
+    DISABLED，而不是与「上游失败导致没跑」混为一谈。
+
+    Args:
+        sink: 可选 C 字典事件回调；为 None 时本函数不产生任何开销。
+        component: binding、logical_plan、optimizer、executor 或 runtime。
+        operation: 界面显示的稳定操作名。
+        reason: 关闭原因，例如 ``optimize=False``。
+
+    Raises:
+        ValueError: component 不在 C 阶段中，或 operation / reason 为空。
+    """
+
+    if component not in _COMPONENTS:
+        raise ValueError(f"unknown runner trace component: {component!r}")
+    for field_name, value in (("operation", operation), ("reason", reason)):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"disabled trace {field_name} must be non-empty")
+    if sink is None:
+        return
+    _emit(
+        sink,
+        {
+            "component": component,
+            "operation": operation,
+            "arguments": (),
+            "keyword_arguments": {},
+            "started_at": perf_counter(),
+            "status": "disabled",
+            "result": None,
+            "metrics": {"reason": reason},
+            "elapsed_ms": 0.0,
+        },
+    )
 
 
 def trace_runner_operation(
@@ -280,4 +361,9 @@ def trace_runner_operation(
     return decorate
 
 
-__all__ = ["RunnerTracePayload", "RunnerTraceSink", "trace_runner_operation"]
+__all__ = [
+    "RunnerTracePayload",
+    "RunnerTraceSink",
+    "emit_disabled_operation",
+    "trace_runner_operation",
+]

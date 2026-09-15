@@ -15,9 +15,11 @@ from contracts.ast import (
     Assignment,
     Column,
     CreateDatabaseStmt,
+    CreateIndexStmt,
     CreateTableStmt,
     DeleteStmt,
     DropDatabaseStmt,
+    DropIndexStmt,
     DropTableStmt,
     Expr,
     InsertStmt,
@@ -27,7 +29,12 @@ from contracts.ast import (
     UpdateStmt,
     UseDatabaseStmt,
 )
-from contracts.errors import E_DUP_TABLE_ALIAS, E_VALUE_COUNT, SqlError
+from contracts.errors import (
+    E_COLUMN_NOT_FOUND,
+    E_DUP_TABLE_ALIAS,
+    E_VALUE_COUNT,
+    SqlError,
+)
 from contracts.storage import TableInfo
 from runner.logical_plan.base import (
     LogicalColumn,
@@ -43,9 +50,11 @@ from runner.logical_plan.expressions import (
 )
 from runner.logical_plan.plans import (
     LogicalCreateDatabase,
+    LogicalCreateIndex,
     LogicalCreateTable,
     LogicalDelete,
     LogicalDropDatabase,
+    LogicalDropIndex,
     LogicalDropTable,
     LogicalFilter,
     LogicalInsert,
@@ -96,6 +105,10 @@ class LogicalPlanBuilder:
                 )
             case DropTableStmt():
                 return LogicalDropTable(table=statement.table)
+            case CreateIndexStmt():
+                return self._build_create_index(statement)
+            case DropIndexStmt():
+                return LogicalDropIndex(index_name=statement.index_name)
             case InsertStmt():
                 return self._build_insert(statement)
             case SelectStmt():
@@ -301,3 +314,25 @@ class LogicalPlanBuilder:
         _, scan = self._build_source(TableRef(statement.table))
         child = self._build_filter(scan, statement.where)
         return LogicalDelete(table=statement.table, child=child)
+
+    @trace_runner_operation("binding", "bind_create_index")
+    def _build_create_index(self, statement: CreateIndexStmt) -> LogicalCreateIndex:
+        """建索引前确认目标列存在。
+
+        表名合法性与表是否存在由 describe 判定，C 不重复实现标识符规则；
+        索引重名不在此判定，那是只有 Storage 才权威的事实。
+        """
+
+        table_info = self._describe_table(statement.table)
+        if not any(
+            column.name == statement.column for column in table_info.columns
+        ):
+            raise SqlError(
+                E_COLUMN_NOT_FOUND,
+                f"column not found in table {statement.table}: {statement.column}",
+            )
+        return LogicalCreateIndex(
+            index_name=statement.index_name,
+            table=statement.table,
+            column=statement.column,
+        )

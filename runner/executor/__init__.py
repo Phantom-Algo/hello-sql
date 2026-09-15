@@ -18,12 +18,15 @@ from runner.executor.dml import (
     build_dml_executor,
 )
 from runner.executor.dql import (
+    EmptyExecutor,
     FilterExecutor,
+    IndexScanExecutor,
     NestedLoopJoinExecutor,
     ProjectionExecutor,
     SelectExecutor,
     SeqScanExecutor,
     build_row_executor,
+    build_scan_executor,
     build_select_executor,
 )
 from runner.executor.row import ExecRow
@@ -36,11 +39,14 @@ __all__ = [
     "ExecutorTreeBuilder",
     # DQL
     "SeqScanExecutor",
+    "IndexScanExecutor",
+    "EmptyExecutor",
     "FilterExecutor",
     "NestedLoopJoinExecutor",
     "ProjectionExecutor",
     "SelectExecutor",
     "build_row_executor",
+    "build_scan_executor",
     "build_select_executor",
     # DML
     "DmlPlan",
