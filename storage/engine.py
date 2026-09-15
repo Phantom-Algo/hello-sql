@@ -655,13 +655,40 @@ class TableEngine:
                 yield row
 
     @trace_storage_operation("engine", "update")
-    def get_row(self, row_id: RowId) -> Row:
+    def get_row(self, row_id: RowId, *, page_hint: int | None = None) -> Row:
         """按 row_id 取一整行（索引回表用）；找不到 → E_ROW_NOT_FOUND。
 
-        复用既有 `_locate` 的定位（含 rid→页 映射与退化全表找），
-        再按槽的溢出标志决定 inline 直解还是沿链拼回。
+        `page_hint` 是索引叶条目携带的行页号（D49a）：先按它读一页并校验槽里
+        确实是这个 rid。**提示只是加速**——页号越界或该页没有这个 rid 时一律
+        退回 `_locate`（映射 → 退化全表找），所以正确性不依赖提示的新鲜度。
+        命中时顺手把 rid→页 写进映射，后续 UPDATE/DELETE 也跟着变成 O(1)。
         """
+
+        if page_hint is not None:
+            hinted = self._row_from_hint(row_id, page_hint)
+            if hinted is not None:
+                return hinted
         _page_no, page, slot_index = self._locate(row_id)
+        return self._decode_slot(page, slot_index)
+
+    def _row_from_hint(self, row_id: RowId, page_hint: int) -> Row | None:
+        """按提示页取行；页号不可读或槽里没有该 rid 时返回 None（交给兜底路径）。"""
+
+        if type(page_hint) is not int:
+            return None
+        try:
+            page = bytearray(read_page(self._pool, self._path, page_hint))
+        except SqlError:
+            return None
+        slot_index = self._find_slot_by_row_id(page, row_id)
+        if slot_index is None:
+            return None
+        self._rid_to_page[row_id] = page_hint
+        return self._decode_slot(page, slot_index)
+
+    def _decode_slot(self, page: bytes | bytearray, slot_index: int) -> Row:
+        """按槽的溢出标志决定 inline 直解还是沿链拼回（回表与提示路径共用）。"""
+
         record_offset, record_length, is_overflow = _page_slot_entries(page)[
             slot_index
         ]
@@ -677,6 +704,14 @@ class TableEngine:
                 E_STORAGE, "corrupt overflow row: anchor row_id mismatch"
             )
         return row
+
+    def page_of(self, row_id: RowId) -> int:
+        """行所在页号（索引构建/迁移写入提示用）；优先查映射，缺失才定位。"""
+
+        page_no = self._rid_to_page.get(row_id)
+        if page_no is not None:
+            return page_no
+        return self._locate(row_id)[0]
 
     @trace_storage_operation("engine", "update")
     def update(self, row_id: RowId, values: Sequence[Value]) -> None:

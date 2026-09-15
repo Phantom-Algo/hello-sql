@@ -35,6 +35,20 @@ from storage.pager import INDEX_FILE_KIND, page_count, read_page, write_page
 from storage.tests.index_audit_util import audit_index
 
 
+
+# ---- D49a：叶条目多了"行页号"字段 ----
+# 这两个文件测的是树机制本身，不关心页号真伪；统一用一个占位页号写入，
+# 断言时只看 rid（`rids()` 把 [(rid, page)] 投影成 [rid]）。
+_PLACEHOLDER_PAGE = 1
+
+
+def _insert(tree, key, row_id):
+    tree.insert(key, row_id, _PLACEHOLDER_PAGE)
+
+
+def _rids(entries):
+    return [row_id for row_id, _page_no in entries]
+
 def _index_path(tmp_path) -> Path:
     return Path(tmp_path) / "idx.idx"
 
@@ -47,7 +61,7 @@ def _build(tmp_path, count: int = 400):
     pool = BufferPool(capacity=64)
     tree = IndexTree(pool, path, column)
     for value in range(count):
-        tree.insert(value, value + 1)  # rid 与键错开，避免掩盖越界问题
+        _insert(tree, value, value + 1)  # rid 与键错开，避免掩盖越界问题
     return tree, path, column
 
 
@@ -95,8 +109,8 @@ def test_delete_entry_that_equals_a_separator_key(tmp_path) -> None:
     for value in (0, 85, 170, 255):
         tree.delete(value, value + 1)
 
-    assert tree.lookup(170) == []
-    assert tree.range(None, None) == sorted(
+    assert _rids(tree.lookup(170)) == []
+    assert _rids(tree.range(None, None)) == sorted(
         value + 1 for value in range(400) if value not in (0, 85, 170, 255)
     )
     audit_index(tree.pool, path, column)
@@ -111,7 +125,7 @@ def test_audit_passes_after_heavy_mixed_dml(tmp_path) -> None:
     summary = audit_index(tree.pool, path, column)
     expected = [value + 1 for value in range(400) if value % 3]
 
-    assert tree.range(None, None) == expected
+    assert _rids(tree.range(None, None)) == expected
     assert summary["entries"] == len(expected)
 
 
@@ -127,11 +141,11 @@ def test_leaf_chain_cycle_raises_storage(tmp_path) -> None:
 
     write_page(tree.pool, path, leaf, bytes(page), kind=INDEX_FILE_KIND)
 
-    _expect_code(lambda: tree.range(None, None), E_STORAGE)
+    _expect_code(lambda: _rids(tree.range(None, None)), E_STORAGE)
     # 命中第一个叶就返回的查询不受影响（它不会走到链的下一跳）；
     # 需要走到链尾的查询才会遇到环。
-    assert tree.lookup(0) == [1]
-    _expect_code(lambda: tree.lookup(999), E_STORAGE)
+    assert _rids(tree.lookup(0)) == [1]
+    _expect_code(lambda: _rids(tree.lookup(999)), E_STORAGE)
 
 
 def test_leaf_next_out_of_range_raises_storage(tmp_path) -> None:
@@ -141,7 +155,7 @@ def test_leaf_next_out_of_range_raises_storage(tmp_path) -> None:
     page[8:12] = (9999).to_bytes(4, "little")
     write_page(tree.pool, path, leaf, bytes(page), kind=INDEX_FILE_KIND)
 
-    _expect_code(lambda: tree.range(None, None), E_STORAGE)
+    _expect_code(lambda: _rids(tree.range(None, None)), E_STORAGE)
 
 
 def test_root_out_of_range_raises_storage(tmp_path, ) -> None:

@@ -54,6 +54,7 @@ from storage.constants import (
     INDEX_PAGE0_KEY_TYPE_OFFSET,
     INDEX_PAGE0_MAGIC_OFFSET,
     INDEX_PAGE0_ROOT_OFFSET,
+    INDEX_LEAF_PREFIX_SIZE,
     INDEX_RID_SIZE,
     INDEX_SLOT_SIZE,
     INTERIOR_NODE,
@@ -224,6 +225,24 @@ def key_type_of(header: IndexFileHeader) -> SqlType:
     return _KEY_TAG_TO_SQLTYPE[header.key_type_tag]
 
 
+def index_file_version(file_path: Path | str) -> int:
+    """用普通文件读取出页 0 的版本号（D49a 迁移判断专用）。
+
+    pager 在每次页访问时都会强校验版本，因此"这是不是已知旧版本"必须先
+    绕开它读这 6 个字节。magic 不符 → E_STORAGE（这不是索引文件）。
+    """
+
+    path = Path(file_path)
+    try:
+        with open(path, "rb") as fh:
+            header = fh.read(INDEX_PAGE0_HEADER_SIZE)
+    except OSError as exc:
+        raise SqlError(E_STORAGE, f"cannot read index file: {path}") from exc
+    if len(header) < INDEX_PAGE0_HEADER_SIZE or header[:4] != INDEX_MAGIC:
+        raise SqlError(E_STORAGE, f"not a hello-sql index file: {path}")
+    return int.from_bytes(header[4:6], "little")
+
+
 # ---------- 节点页原语 ----------
 
 
@@ -298,7 +317,12 @@ def validate_node(page: bytes, *, context: str) -> None:
     if kind not in (LEAF_NODE, INTERIOR_NODE):
         raise SqlError(E_STORAGE, f"corrupt index node {context}: bad type {kind}")
     count = entry_count(page)
-    pointer = INDEX_RID_SIZE if kind == LEAF_NODE else INDEX_CHILD_PTR_SIZE
+    # 叶条目定长前缀是 rid + 页号；内节点是子页号 + rid（分隔键要带 rid）。
+    pointer = (
+        INDEX_LEAF_PREFIX_SIZE
+        if kind == LEAF_NODE
+        else INDEX_CHILD_PTR_SIZE + INDEX_RID_SIZE
+    )
     if INDEX_NODE_HEADER_SIZE + INDEX_SLOT_SIZE * count > PAGE_SIZE:
         raise SqlError(
             E_STORAGE, f"corrupt index node {context}: slot count {count} overflows"
@@ -362,7 +386,7 @@ def node_fits(entries: Sequence[bytes]) -> bool:
 
 
 def leaf_entry_size(key_bytes: bytes) -> int:
-    return INDEX_RID_SIZE + len(key_bytes)
+    return INDEX_LEAF_PREFIX_SIZE + len(key_bytes)
 
 
 def interior_entry_size(key_bytes: bytes) -> int:
@@ -424,9 +448,13 @@ def compare_keys(column: ColumnDef, left: bytes, right: bytes) -> int:
 _RID = struct.Struct("<Q")
 
 
-def _leaf_payload(row_id: int, key_bytes: bytes) -> bytes:
-    """叶条目负载：u64 rid + 键编码（与记录布局对称）。"""
-    return _RID.pack(row_id) + key_bytes
+def _leaf_payload(row_id: int, page_no: int, key_bytes: bytes) -> bytes:
+    """叶条目负载：u64 rid + u32 行所在页号 + 键编码（D49a）。
+
+    页号让回表 O(1)：拿到条目就能直接读行所在页，不必先建立/查询 rid→页 映射。
+    它只是**提示**——读取侧仍会校验该页槽里确实是这个 rid，不符就退回全表定位。
+    """
+    return _RID.pack(row_id) + _U32.pack(page_no) + key_bytes
 
 
 def _interior_payload(child_page: int, row_id: int, key_bytes: bytes) -> bytes:
@@ -505,12 +533,17 @@ class IndexTree:
 
     # ---- 条目视图 ----
 
-    def _leaf_entries(self, page: bytes) -> list[tuple[int, bytes, Value]]:
+    def _leaf_entries(self, page: bytes) -> list[tuple[int, int, bytes, Value]]:
+        """叶条目视图：(rid, 行所在页号, 键字节, 键值)。"""
+
         result = []
         for payload in entry_payloads(page):
             row_id = _RID.unpack_from(payload, 0)[0]
-            key_bytes = payload[INDEX_RID_SIZE:]
-            result.append((row_id, key_bytes, decode_key(self.column, key_bytes)))
+            page_no = _U32.unpack_from(payload, INDEX_RID_SIZE)[0]
+            key_bytes = payload[INDEX_LEAF_PREFIX_SIZE:]
+            result.append(
+                (row_id, page_no, key_bytes, decode_key(self.column, key_bytes))
+            )
         return result
 
     def _interior_entries(
@@ -528,7 +561,7 @@ class IndexTree:
 
     def _leaf_sort_key(self, payload: bytes) -> tuple[Value, int]:
         return (
-            decode_key(self.column, payload[INDEX_RID_SIZE:]),
+            decode_key(self.column, payload[INDEX_LEAF_PREFIX_SIZE:]),
             _RID.unpack_from(payload, 0)[0],
         )
 
@@ -599,14 +632,14 @@ class IndexTree:
 
     # ---- 查询 ----
 
-    def lookup(self, key: Value) -> list[int]:
-        """等值查找：返回全部匹配的 rid，按 rid 升序。"""
+    def lookup(self, key: Value) -> list[tuple[int, int]]:
+        """等值查找：返回全部匹配的 `(rid, 行所在页号)`，按 rid 升序（D49a）。"""
         probe = normalize_key(self.column, key)
         root, _height = self._load()
         page_no = self._leaf_for(root, probe, 0)
         total_pages = page_count(self.pool, self.path, kind=INDEX_FILE_KIND)
         steps = 0
-        result: list[int] = []
+        result: list[tuple[int, int]] = []
         while page_no != 0:
             steps += 1
             if steps > total_pages:
@@ -617,12 +650,12 @@ class IndexTree:
                     f"or too long",
                 )
             page = self._read(page_no)
-            for row_id, _key_bytes, value in self._leaf_entries(page):
+            for row_id, row_page, _key_bytes, value in self._leaf_entries(page):
                 if value < probe:
                     continue
                 if value > probe:
                     return result
-                result.append(row_id)
+                result.append((row_id, row_page))
             page_no = leaf_next(page)
         return result
 
@@ -633,8 +666,8 @@ class IndexTree:
         *,
         lower_inclusive: bool = True,
         upper_inclusive: bool = True,
-    ) -> list[int]:
-        """范围查找：端点可为 None（无界），默认闭区间，按键序返回 rid。"""
+    ) -> list[tuple[int, int]]:
+        """范围查找：端点可为 None（无界），默认闭区间，按键序返回 `(rid, 页号)`。"""
         low = None if lower is None else normalize_key(self.column, lower)
         high = None if upper is None else normalize_key(self.column, upper)
         if low is not None and high is not None:
@@ -649,7 +682,7 @@ class IndexTree:
         )
         total_pages = page_count(self.pool, self.path, kind=INDEX_FILE_KIND)
         steps = 0
-        result: list[int] = []
+        result: list[tuple[int, int]] = []
         while page_no != 0:
             steps += 1
             if steps > total_pages:
@@ -659,7 +692,7 @@ class IndexTree:
                     f"or too long",
                 )
             page = self._read(page_no)
-            for row_id, _key_bytes, value in self._leaf_entries(page):
+            for row_id, row_page, _key_bytes, value in self._leaf_entries(page):
                 if low is not None:
                     if value < low:
                         continue
@@ -670,19 +703,19 @@ class IndexTree:
                         return result
                     if value == high and not upper_inclusive:
                         return result
-                result.append(row_id)
+                result.append((row_id, row_page))
             page_no = leaf_next(page)
         return result
 
     # ---- 写入 ----
 
-    def insert(self, key: Value, row_id: int) -> None:
-        """插入一个 (键, rid)；必要时分裂叶与内节点，并更新页 0 的根与树高。"""
+    def insert(self, key: Value, row_id: int, page_no: int) -> None:
+        """插入一个 (键, rid, 行页号)；必要时分裂叶与内节点，并更新根与树高。"""
         probe = normalize_key(self.column, key)
         key_bytes = encode_key(self.column, probe)
         root, height = self._load()
 
-        separator = self._insert_into(root, probe, row_id, key_bytes)
+        separator = self._insert_into(root, probe, row_id, page_no, key_bytes)
         if separator is None:
             return
 
@@ -693,14 +726,19 @@ class IndexTree:
         self._store(new_root, height + 1)
 
     def _insert_into(
-        self, page_no: int, probe: Value, row_id: int, key_bytes: bytes
+        self,
+        page_no: int,
+        probe: Value,
+        row_id: int,
+        row_page: int,
+        key_bytes: bytes,
     ) -> bytes | None:
         """向以 page_no 为根的子树插入；返回上推的分隔条目（若发生分裂）。"""
         page = self._read(page_no)
 
         if node_type(page) == LEAF_NODE:
             payloads = list(entry_payloads(page))
-            payloads.append(_leaf_payload(row_id, key_bytes))
+            payloads.append(_leaf_payload(row_id, row_page, key_bytes))
             payloads.sort(key=self._leaf_sort_key)
             if node_fits(payloads):
                 rebuild_node(
@@ -736,11 +774,11 @@ class IndexTree:
             if next_page != 0:
                 self._set_leaf_prev(next_page, right_page)
             first_rid = _RID.unpack_from(right[0], 0)[0]
-            first_key = right[0][INDEX_RID_SIZE:]
+            first_key = right[0][INDEX_LEAF_PREFIX_SIZE:]
             return _interior_payload(right_page, first_rid, first_key)
 
         child = self._child_for_insert(page, probe, row_id)
-        separator = self._insert_into(child, probe, row_id, key_bytes)
+        separator = self._insert_into(child, probe, row_id, row_page, key_bytes)
         if separator is None:
             return None
 
@@ -792,6 +830,53 @@ class IndexTree:
             root, height = child, height - 1
             self._store(root, height)
 
+    def update_page(self, key: Value, row_id: int, page_no: int) -> None:
+        """刷新既有条目的行页号（D49a：整行更新把行挪到别的页时调用）。
+
+        只改那一页号字段：键与 rid 都不变，因此条目在叶内/树内的位置不动，
+        重复键之间也不会被重排。找不到条目 → E_STORAGE（索引与表不一致属损坏，
+        不能静默跳过）。
+        """
+
+        probe = normalize_key(self.column, key)
+        root, _height = self._load()
+        leaf = self._leaf_for_exact(root, probe, row_id)
+        page = self._read(leaf)
+        payloads = list(entry_payloads(page))
+        for index, payload in enumerate(payloads):
+            entry_rid = _RID.unpack_from(payload, 0)[0]
+            if entry_rid != row_id:
+                continue
+            entry_key = decode_key(self.column, payload[INDEX_LEAF_PREFIX_SIZE:])
+            if entry_key != probe:
+                continue
+            payloads[index] = _leaf_payload(
+                row_id, page_no, payload[INDEX_LEAF_PREFIX_SIZE:]
+            )
+            rebuild_node(
+                page,
+                LEAF_NODE,
+                payloads,
+                next_leaf=leaf_next(page),
+                prev_leaf=leaf_prev(page),
+            )
+            self._write(leaf, page)
+            return
+        raise SqlError(
+            E_STORAGE,
+            f"index entry not found: ({probe!r}, {row_id}) in {self.path.name}",
+        )
+
+    def _leaf_for_exact(self, root: int, probe: Value, row_id: int) -> int:
+        """按 (键, rid) 精确下降到一个叶（与删除同一条最右规则）。"""
+
+        page_no = root
+        while True:
+            page = self._read(page_no)
+            if node_type(page) == LEAF_NODE:
+                return page_no
+            page_no = self._child_for_insert(page, probe, row_id)
+
     def _delete_from(
         self, page_no: int, probe: Value, row_id: int, root_page: int
     ) -> int | None:
@@ -803,7 +888,9 @@ class IndexTree:
             target = None
             for index, payload in enumerate(payloads):
                 entry_rid = _RID.unpack_from(payload, 0)[0]
-                entry_key = decode_key(self.column, payload[INDEX_RID_SIZE:])
+                entry_key = decode_key(
+                    self.column, payload[INDEX_LEAF_PREFIX_SIZE:]
+                )
                 if entry_key == probe and entry_rid == row_id:
                     target = index
                     break

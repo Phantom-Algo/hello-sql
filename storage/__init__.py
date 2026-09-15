@@ -59,6 +59,7 @@ from storage.constants import (
     DEFAULT_CACHE_CAPACITY,
     INDEX_DIR_NAME,
     INDEX_FILE_SUFFIX,
+    LEGACY_INDEX_FILE_VERSION,
     RESERVED_TABLE_PREFIX,
     SYS_COLUMNS_FILE_NAME,
     SYS_INDEXES_FILE_NAME,
@@ -66,7 +67,7 @@ from storage.constants import (
     TABLE_FILE_SUFFIX,
 )
 from storage.engine import TableEngine
-from storage.index import IndexTree, create_index_file
+from storage.index import IndexTree, create_index_file, index_file_version
 from storage.pager import create_table_file
 from storage.syscatalog import create_empty_system_catalog
 from storage.stats import TableStatsProvider
@@ -499,9 +500,13 @@ class Storage:
         columns = catalog.get(name)
         normalized = _normalize_values(columns, values)
         engine = self._engine_for(name, columns)
+        self._ensure_indexes_ready(name)  # 旧格式索引必须在改表之前迁移（D49a）
         row_id = engine.insert(normalized)
+        row_page = engine.page_of(row_id)
         for info, column, position in self._index_targets(name):
-            self._index_tree(info, column).insert(normalized[position], row_id)
+            self._index_tree(info, column).insert(
+                normalized[position], row_id, row_page
+            )
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
         self._flush_indexes(name)
         self._note_stats_insert(name, normalized)
@@ -520,13 +525,19 @@ class Storage:
         columns = self._live_catalog().get(name)
         normalized = _normalize_values(columns, values)
         engine = self._engine_for(name, columns)
+        self._ensure_indexes_ready(name)  # 同上：先迁移再改表
         old_values = engine.get_row(row_id)[1]
+        old_page = engine.page_of(row_id)  # get_row 已补齐映射 → O(1)
         engine.update(row_id, normalized)
+        new_page = engine.page_of(row_id)  # update 已更新映射 → O(1)
         for info, column, position in self._index_targets(name):
+            tree = self._index_tree(info, column)
             if old_values[position] != normalized[position]:
-                tree = self._index_tree(info, column)
                 tree.delete(old_values[position], row_id)
-                tree.insert(normalized[position], row_id)
+                tree.insert(normalized[position], row_id, new_page)
+            elif new_page != old_page:
+                # 值没变但行搬了页：只刷新页号提示，键序与重复键位置都不动（D49a）
+                tree.update_page(normalized[position], row_id, new_page)
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
         self._flush_indexes(name)
         self._note_stats_update(name, old_values, normalized)
@@ -536,6 +547,7 @@ class Storage:
         _validate_table_name(name)
         columns = self._live_catalog().get(name)
         engine = self._engine_for(name, columns)
+        self._ensure_indexes_ready(name)  # 同上：先迁移再改表
         old_values = engine.get_row(row_id)[1]
         for info, column, position in self._index_targets(name):
             self._index_tree(info, column).delete(old_values[position], row_id)
@@ -555,13 +567,59 @@ class Storage:
         return self._index_dir / f"{name}{INDEX_FILE_SUFFIX}"
 
     def _index_tree(self, info: IndexInfo, column: ColumnDef) -> IndexTree:
-        """取（或惰性创建）该索引的共享树；drop 时会从注册表移除。"""
+        """取（或惰性创建）该索引的共享树；drop 时会从注册表移除。
+
+        首次打开时顺带做旧格式迁移（D49a）：v1 索引的叶条目不带行页号，
+        按新格式自动重建一次；未知版本不重建，交给 pager 抛 E_STORAGE。
+        """
         key = (self._db_path, info.name)
         tree = self._server._index_trees.get(key)
         if tree is None:
-            tree = IndexTree(self._pool, self._index_file_path(info.name), column)
+            path = self._index_file_path(info.name)
+            self._migrate_legacy_index(path, info, column)
+            tree = IndexTree(self._pool, path, column)
             self._server._index_trees[key] = tree
         return tree
+
+    def _migrate_legacy_index(
+        self,
+        index_path: Path,
+        info: IndexInfo,
+        column: ColumnDef,
+    ) -> None:
+        """把已知旧版本（v1）的索引文件按新格式就地重建（D49a）。"""
+
+        if index_file_version(index_path) != LEGACY_INDEX_FILE_VERSION:
+            return
+        self._rebuild_index_file(index_path, info, column)
+
+    def _rebuild_index_file(
+        self,
+        index_path: Path,
+        info: IndexInfo,
+        column: ColumnDef,
+    ) -> None:
+        """按表数据重灌索引文件（旧格式迁移与建索引共用同一套写入）。"""
+
+        columns = self._live_catalog().get(info.table)
+        engine = self._engine_for(info.table, columns)
+        position = [item.name for item in columns].index(info.column)
+        self._pool.discard(index_path)  # 旧帧必须丢掉，否则会读到陈旧页
+        create_index_file(index_path, column.type)
+        tree = IndexTree(self._pool, index_path, column)
+        self._write_index_entries(tree, engine, position)
+        self._pool.flush(index_path)
+
+    def _write_index_entries(
+        self,
+        tree: IndexTree,
+        engine: TableEngine,
+        position: int,
+    ) -> None:
+        """把整表的某一列灌进索引（行页号随条目一起写入，D49a）。"""
+
+        for row_id, values in engine.scan():
+            tree.insert(values[position], row_id, engine.page_of(row_id))
 
     def _index_targets(self, table: str) -> list[tuple[IndexInfo, ColumnDef, int]]:
         """该表全部索引的（定义，列定义，列在行值元组中的位置）。"""
@@ -574,6 +632,17 @@ class Storage:
                     targets.append((info, column, position))
                     break
         return targets
+
+    def _ensure_indexes_ready(self, table: str) -> None:
+        """DML 之前先把该表的索引树准备好（含 v1 → v2 的自动重建，D49a）。
+
+        顺序很关键：迁移会重扫整表来重灌索引，如果放在表改动**之后**，重建结果
+        会包含本次写入，而写路径随后又补一条，索引里就出现重复条目——M8 的
+        "重建后 DML 联动"用例正是靠这条顺序才成立。
+        """
+
+        for info, column, _position in self._index_targets(table):
+            self._index_tree(info, column)
 
     def _flush_indexes(self, table: str) -> None:
         """把该表涉及的全部索引文件落盘（D11 纪律）。"""
@@ -615,8 +684,9 @@ class Storage:
         position = [item.name for item in columns].index(column)
         try:
             tree = IndexTree(self._pool, index_path, column_def)
-            for row_id, values in self._engine_for(table, columns).scan():
-                tree.insert(values[position], row_id)
+            self._write_index_entries(
+                tree, self._engine_for(table, columns), position
+            )
             self._pool.flush(index_path)
             catalog.register_index(name, table, column)
         except SqlError:
@@ -662,8 +732,8 @@ class Storage:
     def index_lookup(self, table: str, column: str, key: Value) -> Iterator[Row]:
         """等值查找：返回与 scan() 同形状的行迭代器（逐行回表）。"""
         info, column_def = self._index_target(table, column)
-        rids = self._index_tree(info, column_def).lookup(key)
-        return self._rows_for_rids(table, rids)
+        entries = self._index_tree(info, column_def).lookup(key)
+        return self._rows_for_entries(table, entries)
 
     def index_range(
         self,
@@ -677,13 +747,13 @@ class Storage:
     ) -> Iterator[Row]:
         """范围查找：端点为 None 表示无界，默认闭区间。"""
         info, column_def = self._index_target(table, column)
-        rids = self._index_tree(info, column_def).range(
+        entries = self._index_tree(info, column_def).range(
             lower,
             upper,
             lower_inclusive=lower_inclusive,
             upper_inclusive=upper_inclusive,
         )
-        return self._rows_for_rids(table, rids)
+        return self._rows_for_entries(table, entries)
 
     def _index_target(self, table: str, column: str) -> tuple[IndexInfo, ColumnDef]:
         """定位（表，列）上的索引；没有则 E_INDEX_NOT_FOUND。"""
@@ -695,12 +765,18 @@ class Storage:
                 return info, _column_named(columns, column)
         raise SqlError(E_INDEX_NOT_FOUND, f"no index on {table}.{column}")
 
-    def _rows_for_rids(self, table: str, rids: Sequence[RowId]) -> Iterator[Row]:
-        """按 rid 逐行回表（生成器：查询是惰性的，与 scan 一致）。"""
+    def _rows_for_entries(
+        self, table: str, entries: Sequence[tuple[RowId, int]]
+    ) -> Iterator[Row]:
+        """按 (rid, 行页号) 逐行回表（生成器：查询是惰性的，与 scan 一致）。
+
+        页号是索引条目里的提示（D49a）：命中就只读一页，提示失效则由
+        `TableEngine.get_row` 内部退回全表定位。
+        """
         columns = self._live_catalog().get(table)
         engine = self._engine_for(table, columns)
-        for row_id in rids:
-            yield engine.get_row(row_id)
+        for row_id, row_page in entries:
+            yield engine.get_row(row_id, page_hint=row_page)
 
     # ---- 统计（V3 M5/D37/D38/D41） ----
 

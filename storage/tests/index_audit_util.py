@@ -5,6 +5,7 @@
 - 所有叶都在同一深度，且深度与页 0 的 height 一致；
 - 内节点分隔键 == 右子树最小条目的完整 (键, rid)（D46）；
 - 叶内条目按 (键, rid) 严格有序；
+- 叶条目里的**行页号提示**确实指向装着该行的页（D49a；需调用方给出表侧回调）；
 - 叶链自最左叶起可覆盖全部可达叶，长度正确、prev/next 互指、无环；
 - 每个非页 0 的页要么从根可达、要么在空闲页链表里（无游离页）。
 
@@ -31,6 +32,7 @@ from storage.index import (
     validate_node,
 )
 from storage.constants import (
+    INDEX_LEAF_PREFIX_SIZE,
     INDEX_RID_SIZE,
     INTERIOR_NODE,
     LEAF_NODE,
@@ -40,11 +42,16 @@ from storage.valuecodec import decode_value
 
 
 def _decode_leaf_entry(column: ColumnDef, payload: bytes):
+    """叶条目 = u64 rid + u32 行页号 + 键编码（D49a）。"""
+
     row_id = int.from_bytes(payload[:INDEX_RID_SIZE], "little")
-    value, position = decode_value(column, payload, INDEX_RID_SIZE)
+    page_no = int.from_bytes(
+        payload[INDEX_RID_SIZE:INDEX_LEAF_PREFIX_SIZE], "little"
+    )
+    value, position = decode_value(column, payload, INDEX_LEAF_PREFIX_SIZE)
     if position != len(payload):
         raise SqlError(E_STORAGE, "audit: leaf entry trailing bytes")
-    return row_id, value
+    return row_id, page_no, value
 
 
 def _decode_interior_entry(column: ColumnDef, payload: bytes):
@@ -68,7 +75,7 @@ def _subtree_min(pool, path, column, page_no: int):
         if node_type(page) == LEAF_NODE:
             if not payloads:
                 raise SqlError(E_STORAGE, "audit: empty leaf in subtree")
-            row_id, value = _decode_leaf_entry(column, payloads[0])
+            row_id, _page_no, value = _decode_leaf_entry(column, payloads[0])
             return (value, row_id)
         if not payloads and first_child(page) == 0:
             raise SqlError(E_STORAGE, "audit: childless interior node")
@@ -87,15 +94,26 @@ def _subtree_max(pool, path, column, page_no: int):
         if node_type(page) == LEAF_NODE:
             if not payloads:
                 raise SqlError(E_STORAGE, "audit: empty leaf in subtree")
-            row_id, value = _decode_leaf_entry(column, payloads[-1])
+            row_id, _page_no, value = _decode_leaf_entry(column, payloads[-1])
             return (value, row_id)
         if not payloads:
             raise SqlError(E_STORAGE, "audit: childless interior node")
         page_no = _decode_interior_entry(column, payloads[-1])[0]
 
 
-def audit_index(pool: BufferPool, path: Path, column: ColumnDef) -> dict:
-    """审计一个索引文件；返回 {pages, leaves, entries}，违反则抛 E_STORAGE。"""
+def audit_index(
+    pool: BufferPool,
+    path: Path,
+    column: ColumnDef,
+    *,
+    expect_page_of=None,
+) -> dict:
+    """审计一个索引文件；返回 {pages, leaves, entries}，违反则抛 E_STORAGE。
+
+    `expect_page_of` 是可选回调 `rid -> 行真实所在页号`（D49a）：给了就逐条
+    校验叶条目的页号提示。提示错了不会让查询出错，只会退化成全表探测——正因
+    如此必须在测试里逐条锁死，否则性能退化会静默发生。
+    """
     header = open_index_file(pool, path, expected_key_type=column.type)
     total_pages = page_count(pool, path, kind=INDEX_FILE_KIND)
 
@@ -115,11 +133,20 @@ def audit_index(pool: BufferPool, path: Path, column: ColumnDef) -> dict:
             leaf_depths[page_no] = depth
             entries += len(payloads)
             keys = [_decode_leaf_entry(column, payload) for payload in payloads]
-            ordered = [(value, rid) for rid, value in keys]
+            ordered = [(value, rid) for rid, _page, value in keys]
             if ordered != sorted(ordered):
                 raise SqlError(
                     E_STORAGE, f"audit: leaf {page_no} entries out of order"
                 )
+            if expect_page_of is not None:
+                for row_id, hint, _value in keys:
+                    actual = expect_page_of(row_id)
+                    if hint != actual:
+                        raise SqlError(
+                            E_STORAGE,
+                            f"audit: leaf {page_no} entry {row_id} claims page "
+                            f"{hint}, row actually lives in page {actual}",
+                        )
             continue
         children = [first_child(page)]
         if not children[0]:

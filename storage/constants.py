@@ -106,7 +106,8 @@ INDEX_FILE_SUFFIX = ".idx"
 # 与表文件页 0 同为 20 B，且 free_head 的偏移/宽度完全一致，
 # 因此 pager 的空闲页链表可以原样复用（D29，见 test_index_constants_m1）。
 INDEX_MAGIC = b"HSIX"          # 4 B，区分索引文件与表文件
-INDEX_FILE_VERSION = 1         # 2 B
+INDEX_FILE_VERSION = 2         # 2 B；2 = 叶条目携带行所在页号（D49a）
+LEGACY_INDEX_FILE_VERSION = 1  # 唯一允许自动重建的旧版本（叶条目不带页号）
 INDEX_PAGE0_MAGIC_OFFSET = 0
 INDEX_PAGE0_MAGIC_SIZE = 4
 INDEX_PAGE0_VERSION_OFFSET = 4
@@ -146,7 +147,10 @@ LEAF_NODE = 1
 INTERIOR_NODE = 2
 INDEX_SLOT_SIZE = 8            # u32 偏移 + u32 长度
 INDEX_RID_SIZE = 8             # u64 rid
+INDEX_PAGE_NO_SIZE = 4         # u32 行所在页号（仅叶条目使用，D49a）
 INDEX_CHILD_PTR_SIZE = 4       # u32 子页号
+# 叶条目定长前缀 = rid + 页号；键编码紧跟在它后面（内节点前缀仍只是子页号 + rid）。
+INDEX_LEAF_PREFIX_SIZE = INDEX_RID_SIZE + INDEX_PAGE_NO_SIZE
 
 # 键类型标记取值（与 SqlType 的对应关系定义在 storage/index.py）
 INDEX_KEY_TYPE_INT = 1
@@ -160,7 +164,7 @@ MAX_INDEX_KEY_BYTES = (
     PAGE_SIZE
     - INDEX_NODE_HEADER_SIZE
     - INDEX_SLOT_SIZE
-    - max(INDEX_RID_SIZE, INDEX_CHILD_PTR_SIZE)
+    - max(INDEX_LEAF_PREFIX_SIZE, INDEX_CHILD_PTR_SIZE + INDEX_RID_SIZE)
 )
 
 # ---- V3 统计（D37/D38/D41）----
