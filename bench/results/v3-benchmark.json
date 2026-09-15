@@ -1,0 +1,1793 @@
+{
+  "bench_version": "1",
+  "meta": {
+    "generated_at_utc": "2026-09-15T02:11:12+00:00",
+    "python": "3.11.15",
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "data_dir": "bench/.cache/ds-0f34160918fc2da9",
+    "dataset_fingerprint": "0f34160918fc2da9",
+    "dataset_created": false,
+    "table": "events",
+    "database": "main",
+    "rows": 4000,
+    "seed": 1,
+    "indexes": [
+      [
+        "idx_events_id",
+        "id"
+      ],
+      [
+        "idx_events_amount",
+        "amount"
+      ]
+    ],
+    "repeat": 3,
+    "modes": [
+      "sql-auto",
+      "sql-seq",
+      "sql-index",
+      "api-seq",
+      "api-index"
+    ],
+    "prewarmed_modes": [
+      "sql-auto",
+      "sql-seq",
+      "sql-index"
+    ],
+    "reproduce": "python -m bench run --rows 4000 --seed 1 --repeat 3"
+  },
+  "scenarios": [
+    {
+      "name": "point_hit",
+      "sql": "SELECT * FROM events WHERE id = 2000;",
+      "expectation": "高选择性点查：应走索引，且只回表一行",
+      "column": "id",
+      "has_index": true,
+      "modes": {
+        "sql-auto": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 3.364,
+            "logical_reads": {
+              "user_table": 10,
+              "index": 6,
+              "syscatalog": 0,
+              "total": 16
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 3,
+              "syscatalog": 0,
+              "total": 3
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "09feae41c02a878a",
+            "reason": "INDEX_EQUALITY",
+            "selectivity": 0.0007496251874062968,
+            "estimated_rows": 2.998500749625187,
+            "seq_cost": 47.0,
+            "index_cost": 5.998500749625187,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 2.313,
+            "logical_reads": {
+              "user_table": 10,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 14
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "09feae41c02a878a",
+            "reason": "INDEX_EQUALITY",
+            "selectivity": 0.0007496251874062968,
+            "estimated_rows": 2.998500749625187,
+            "seq_cost": 47.0,
+            "index_cost": 5.998500749625187,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 40.061,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "09feae41c02a878a",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 42.334,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "09feae41c02a878a",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 2.898,
+            "logical_reads": {
+              "user_table": 10,
+              "index": 6,
+              "syscatalog": 0,
+              "total": 16
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 3,
+              "syscatalog": 0,
+              "total": 3
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "09feae41c02a878a",
+            "reason": "FORCED_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 2.789,
+            "logical_reads": {
+              "user_table": 10,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 14
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "09feae41c02a878a",
+            "reason": "FORCED_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 18.624,
+            "logical_reads": {
+              "user_table": 113,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 113
+            },
+            "physical_reads": {
+              "user_table": 54,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 54
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "09feae41c02a878a",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 17.922,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "09feae41c02a878a",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 7.039,
+            "logical_reads": {
+              "user_table": 90,
+              "index": 6,
+              "syscatalog": 0,
+              "total": 96
+            },
+            "physical_reads": {
+              "user_table": 54,
+              "index": 3,
+              "syscatalog": 0,
+              "total": 57
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "09feae41c02a878a",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 1.82,
+            "logical_reads": {
+              "user_table": 10,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 14
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "09feae41c02a878a",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        }
+      },
+      "consistency": {
+        "digests": {
+          "sql-auto": "09feae41c02a878a",
+          "sql-seq": "09feae41c02a878a",
+          "sql-index": "09feae41c02a878a",
+          "api-seq": "09feae41c02a878a",
+          "api-index": "09feae41c02a878a"
+        },
+        "consistent": true
+      }
+    },
+    {
+      "name": "point_miss",
+      "sql": "SELECT * FROM events WHERE id = 8000;",
+      "expectation": "键真实越界：估算 0 行，索引返回空集",
+      "column": "id",
+      "has_index": true,
+      "modes": {
+        "sql-auto": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 3.03,
+            "logical_reads": {
+              "user_table": 9,
+              "index": 6,
+              "syscatalog": 0,
+              "total": 15
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 3,
+              "syscatalog": 0,
+              "total": 3
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": "INDEX_EQUALITY",
+            "selectivity": 0.0,
+            "estimated_rows": 0.0,
+            "seq_cost": 47.0,
+            "index_cost": 3.0,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 2.097,
+            "logical_reads": {
+              "user_table": 9,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 13
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": "INDEX_EQUALITY",
+            "selectivity": 0.0,
+            "estimated_rows": 0.0,
+            "seq_cost": 47.0,
+            "index_cost": 3.0,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 38.482,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 36.161,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 2.527,
+            "logical_reads": {
+              "user_table": 9,
+              "index": 6,
+              "syscatalog": 0,
+              "total": 15
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 3,
+              "syscatalog": 0,
+              "total": 3
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": "FORCED_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 2.264,
+            "logical_reads": {
+              "user_table": 9,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 13
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": "FORCED_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 19.023,
+            "logical_reads": {
+              "user_table": 113,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 113
+            },
+            "physical_reads": {
+              "user_table": 54,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 54
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 18.002,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 2.001,
+            "logical_reads": {
+              "user_table": 18,
+              "index": 6,
+              "syscatalog": 0,
+              "total": 24
+            },
+            "physical_reads": {
+              "user_table": 6,
+              "index": 3,
+              "syscatalog": 0,
+              "total": 9
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 1.555,
+            "logical_reads": {
+              "user_table": 9,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 13
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        }
+      },
+      "consistency": {
+        "digests": {
+          "sql-auto": "4f53cda18c2baa0c",
+          "sql-seq": "4f53cda18c2baa0c",
+          "sql-index": "4f53cda18c2baa0c",
+          "api-seq": "4f53cda18c2baa0c",
+          "api-index": "4f53cda18c2baa0c"
+        },
+        "consistent": true
+      }
+    },
+    {
+      "name": "range_selective",
+      "sql": "SELECT * FROM events WHERE id > 3900;",
+      "expectation": "窄区间：命中约 100 行，接近索引与顺序扫描的分水岭",
+      "column": "id",
+      "has_index": true,
+      "modes": {
+        "sql-auto": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 46.519,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 99,
+            "row_digest": "a8b90081d8b44e46",
+            "reason": "SEQ_CHEAPER",
+            "selectivity": 0.024756189047261814,
+            "estimated_rows": 99.02475618904725,
+            "seq_cost": 47.0,
+            "index_cost": 102.02475618904725,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 41.748,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 99,
+            "row_digest": "a8b90081d8b44e46",
+            "reason": "SEQ_CHEAPER",
+            "selectivity": 0.024756189047261814,
+            "estimated_rows": 99.02475618904725,
+            "seq_cost": 47.0,
+            "index_cost": 102.02475618904725,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 37.371,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 99,
+            "row_digest": "a8b90081d8b44e46",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 44.469,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 99,
+            "row_digest": "a8b90081d8b44e46",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 18.697,
+            "logical_reads": {
+              "user_table": 108,
+              "index": 7,
+              "syscatalog": 0,
+              "total": 115
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 4
+            },
+            "dirty_writes": 0,
+            "returned_rows": 99,
+            "row_digest": "a8b90081d8b44e46",
+            "reason": "FORCED_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 16.988,
+            "logical_reads": {
+              "user_table": 108,
+              "index": 5,
+              "syscatalog": 0,
+              "total": 113
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 99,
+            "row_digest": "a8b90081d8b44e46",
+            "reason": "FORCED_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 18.58,
+            "logical_reads": {
+              "user_table": 113,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 113
+            },
+            "physical_reads": {
+              "user_table": 54,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 54
+            },
+            "dirty_writes": 0,
+            "returned_rows": 99,
+            "row_digest": "a8b90081d8b44e46",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 17.685,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 99,
+            "row_digest": "a8b90081d8b44e46",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 736.017,
+            "logical_reads": {
+              "user_table": 9368,
+              "index": 7,
+              "syscatalog": 0,
+              "total": 9375
+            },
+            "physical_reads": {
+              "user_table": 54,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 58
+            },
+            "dirty_writes": 0,
+            "returned_rows": 99,
+            "row_digest": "a8b90081d8b44e46",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 14.594,
+            "logical_reads": {
+              "user_table": 108,
+              "index": 5,
+              "syscatalog": 0,
+              "total": 113
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 99,
+            "row_digest": "a8b90081d8b44e46",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        }
+      },
+      "consistency": {
+        "digests": {
+          "sql-auto": "a8b90081d8b44e46",
+          "sql-seq": "a8b90081d8b44e46",
+          "sql-index": "a8b90081d8b44e46",
+          "api-seq": "a8b90081d8b44e46",
+          "api-index": "a8b90081d8b44e46"
+        },
+        "consistent": true
+      }
+    },
+    {
+      "name": "range_wide",
+      "sql": "SELECT * FROM events WHERE id > 1000;",
+      "expectation": "宽区间：命中四分之三，代价模型应放弃索引",
+      "column": "id",
+      "has_index": true,
+      "modes": {
+        "sql-auto": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 49.341,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 2999,
+            "row_digest": "05653facc5e99a4e",
+            "reason": "SEQ_CHEAPER",
+            "selectivity": 0.7499374843710928,
+            "estimated_rows": 2999.749937484371,
+            "seq_cost": 47.0,
+            "index_cost": 3002.749937484371,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 55.643,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 2999,
+            "row_digest": "05653facc5e99a4e",
+            "reason": "SEQ_CHEAPER",
+            "selectivity": 0.7499374843710928,
+            "estimated_rows": 2999.749937484371,
+            "seq_cost": 47.0,
+            "index_cost": 3002.749937484371,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 45.589,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 2999,
+            "row_digest": "05653facc5e99a4e",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 45.701,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 2999,
+            "row_digest": "05653facc5e99a4e",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 527.511,
+            "logical_reads": {
+              "user_table": 3008,
+              "index": 41,
+              "syscatalog": 0,
+              "total": 3049
+            },
+            "physical_reads": {
+              "user_table": 32,
+              "index": 38,
+              "syscatalog": 0,
+              "total": 70
+            },
+            "dirty_writes": 0,
+            "returned_rows": 2999,
+            "row_digest": "05653facc5e99a4e",
+            "reason": "FORCED_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 535.195,
+            "logical_reads": {
+              "user_table": 3008,
+              "index": 39,
+              "syscatalog": 0,
+              "total": 3047
+            },
+            "physical_reads": {
+              "user_table": 42,
+              "index": 38,
+              "syscatalog": 0,
+              "total": 80
+            },
+            "dirty_writes": 0,
+            "returned_rows": 2999,
+            "row_digest": "05653facc5e99a4e",
+            "reason": "FORCED_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 21.127,
+            "logical_reads": {
+              "user_table": 113,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 113
+            },
+            "physical_reads": {
+              "user_table": 54,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 54
+            },
+            "dirty_writes": 0,
+            "returned_rows": 2999,
+            "row_digest": "05653facc5e99a4e",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 21.129,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 2999,
+            "row_digest": "05653facc5e99a4e",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 18920.908,
+            "logical_reads": {
+              "user_table": 232668,
+              "index": 41,
+              "syscatalog": 0,
+              "total": 232709
+            },
+            "physical_reads": {
+              "user_table": 54,
+              "index": 38,
+              "syscatalog": 0,
+              "total": 92
+            },
+            "dirty_writes": 0,
+            "returned_rows": 2999,
+            "row_digest": "05653facc5e99a4e",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 503.193,
+            "logical_reads": {
+              "user_table": 3008,
+              "index": 39,
+              "syscatalog": 0,
+              "total": 3047
+            },
+            "physical_reads": {
+              "user_table": 42,
+              "index": 38,
+              "syscatalog": 0,
+              "total": 80
+            },
+            "dirty_writes": 0,
+            "returned_rows": 2999,
+            "row_digest": "05653facc5e99a4e",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        }
+      },
+      "consistency": {
+        "digests": {
+          "sql-auto": "05653facc5e99a4e",
+          "sql-seq": "05653facc5e99a4e",
+          "sql-index": "05653facc5e99a4e",
+          "api-seq": "05653facc5e99a4e",
+          "api-index": "05653facc5e99a4e"
+        },
+        "consistent": true
+      }
+    },
+    {
+      "name": "dup_lookup",
+      "sql": "SELECT * FROM events WHERE amount = 5;",
+      "expectation": "低基数列等值：命中多行，用于对照回表成本",
+      "column": "amount",
+      "has_index": true,
+      "modes": {
+        "sql-auto": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 10.773,
+            "logical_reads": {
+              "user_table": 52,
+              "index": 6,
+              "syscatalog": 0,
+              "total": 58
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 3,
+              "syscatalog": 0,
+              "total": 3
+            },
+            "dirty_writes": 0,
+            "returned_rows": 43,
+            "row_digest": "3c986ca4671368a3",
+            "reason": "INDEX_EQUALITY",
+            "selectivity": 0.010309278350515464,
+            "estimated_rows": 41.23711340206186,
+            "seq_cost": 47.0,
+            "index_cost": 44.23711340206186,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 9.208,
+            "logical_reads": {
+              "user_table": 52,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 56
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 43,
+            "row_digest": "3c986ca4671368a3",
+            "reason": "INDEX_EQUALITY",
+            "selectivity": 0.010309278350515464,
+            "estimated_rows": 41.23711340206186,
+            "seq_cost": 47.0,
+            "index_cost": 44.23711340206186,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 38.02,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 43,
+            "row_digest": "3c986ca4671368a3",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 34.292,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 43,
+            "row_digest": "3c986ca4671368a3",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 10.636,
+            "logical_reads": {
+              "user_table": 52,
+              "index": 6,
+              "syscatalog": 0,
+              "total": 58
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 3,
+              "syscatalog": 0,
+              "total": 3
+            },
+            "dirty_writes": 0,
+            "returned_rows": 43,
+            "row_digest": "3c986ca4671368a3",
+            "reason": "FORCED_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 11.289,
+            "logical_reads": {
+              "user_table": 52,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 56
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 43,
+            "row_digest": "3c986ca4671368a3",
+            "reason": "FORCED_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 21.459,
+            "logical_reads": {
+              "user_table": 113,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 113
+            },
+            "physical_reads": {
+              "user_table": 54,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 54
+            },
+            "dirty_writes": 0,
+            "returned_rows": 43,
+            "row_digest": "3c986ca4671368a3",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 17.145,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 43,
+            "row_digest": "3c986ca4671368a3",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 261.82,
+            "logical_reads": {
+              "user_table": 3208,
+              "index": 6,
+              "syscatalog": 0,
+              "total": 3214
+            },
+            "physical_reads": {
+              "user_table": 54,
+              "index": 3,
+              "syscatalog": 0,
+              "total": 57
+            },
+            "dirty_writes": 0,
+            "returned_rows": 43,
+            "row_digest": "3c986ca4671368a3",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 10.199,
+            "logical_reads": {
+              "user_table": 52,
+              "index": 4,
+              "syscatalog": 0,
+              "total": 56
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 43,
+            "row_digest": "3c986ca4671368a3",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        }
+      },
+      "consistency": {
+        "digests": {
+          "sql-auto": "3c986ca4671368a3",
+          "sql-seq": "3c986ca4671368a3",
+          "sql-index": "3c986ca4671368a3",
+          "api-seq": "3c986ca4671368a3",
+          "api-index": "3c986ca4671368a3"
+        },
+        "consistent": true
+      }
+    },
+    {
+      "name": "no_index_column",
+      "sql": "SELECT * FROM events WHERE name = 'name-000000';",
+      "expectation": "目标列没有索引：强制 index 时由 B 抛 E_INDEX_NOT_FOUND",
+      "column": "name",
+      "has_index": false,
+      "modes": {
+        "sql-auto": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 43.119,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "9358f8b88b3cd82b",
+            "reason": "NO_MATCHING_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 39.557,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "9358f8b88b3cd82b",
+            "reason": "NO_MATCHING_INDEX",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 47.29,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "9358f8b88b3cd82b",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 39.519,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "9358f8b88b3cd82b",
+            "reason": "FORCED_SEQ",
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "sql-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 1.953,
+            "logical_reads": {
+              "user_table": 9,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 9
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": "E_INDEX_NOT_FOUND",
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 7.356,
+            "logical_reads": {
+              "user_table": 9,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 9
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": "E_INDEX_NOT_FOUND",
+            "counters_stable": true
+          }
+        },
+        "api-seq": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 33.954,
+            "logical_reads": {
+              "user_table": 113,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 113
+            },
+            "physical_reads": {
+              "user_table": 54,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 54
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "9358f8b88b3cd82b",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 22.816,
+            "logical_reads": {
+              "user_table": 104,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 104
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 1,
+            "row_digest": "9358f8b88b3cd82b",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": null,
+            "counters_stable": true
+          }
+        },
+        "api-index": {
+          "cold": {
+            "samples": 3,
+            "elapsed_ms_median": 1.171,
+            "logical_reads": {
+              "user_table": 18,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 18
+            },
+            "physical_reads": {
+              "user_table": 6,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 6
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": "E_INDEX_NOT_FOUND",
+            "counters_stable": true
+          },
+          "hot": {
+            "samples": 3,
+            "elapsed_ms_median": 0.996,
+            "logical_reads": {
+              "user_table": 9,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 9
+            },
+            "physical_reads": {
+              "user_table": 0,
+              "index": 0,
+              "syscatalog": 0,
+              "total": 0
+            },
+            "dirty_writes": 0,
+            "returned_rows": 0,
+            "row_digest": "4f53cda18c2baa0c",
+            "reason": null,
+            "selectivity": null,
+            "estimated_rows": null,
+            "seq_cost": null,
+            "index_cost": null,
+            "error_code": "E_INDEX_NOT_FOUND",
+            "counters_stable": true
+          }
+        }
+      },
+      "consistency": {
+        "digests": {
+          "sql-auto": "9358f8b88b3cd82b",
+          "sql-seq": "9358f8b88b3cd82b",
+          "api-seq": "9358f8b88b3cd82b"
+        },
+        "consistent": true
+      }
+    }
+  ],
+  "errors": [
+    {
+      "scenario": "no_index_column",
+      "mode": "sql-index",
+      "error_code": "E_INDEX_NOT_FOUND",
+      "expected": true
+    },
+    {
+      "scenario": "no_index_column",
+      "mode": "api-index",
+      "error_code": "E_INDEX_NOT_FOUND",
+      "expected": true
+    }
+  ],
+  "verdict": {
+    "rows_match_across_modes": true,
+    "inconsistent_scenarios": [],
+    "counters_stable": true,
+    "unstable_samples": []
+  }
+}
