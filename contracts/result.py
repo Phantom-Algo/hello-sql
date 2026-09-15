@@ -1,4 +1,4 @@
-"""契约 V3.0：单语句与多语句执行结果。"""
+"""契约 V3.1：单语句与多语句执行结果。"""
 
 from __future__ import annotations
 

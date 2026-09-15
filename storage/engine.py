@@ -324,12 +324,31 @@ class TableEngine:
         """活动数据页号（升序），供统计采样使用。"""
         return sorted(self._ensure_layout()[1])
 
-    def sample_rows(self, max_pages: int) -> Iterator[Row]:
-        """按页序产出前 `max_pages` 个活动数据页上的行（统计采样；只读）。
+    @staticmethod
+    def sample_page_numbers(pages: Sequence[int], max_pages: int) -> list[int]:
+        """从升序页号里挑最多 `max_pages` 个**跨页均匀间隔**的页（D48）。
 
-        采样是**有界近似**（D37/D41）：只读这些页，不写盘、不遍历全表。
+        旧口径取页序前缀（`pages[:max_pages]`）：单调插入（自增主键）时样本
+        只覆盖表的前一段，基数与极值都会系统性偏低。均匀间隔在**同一页预算**
+        下覆盖整张表，首末页都必然入选；页数不足时按原样全取。
         """
-        for page_no in self.data_pages()[:max_pages]:
+
+        if max_pages <= 0 or not pages:
+            return []
+        if len(pages) <= max_pages:
+            return list(pages)
+        if max_pages == 1:
+            return [pages[0]]
+        span = len(pages) - 1
+        step = span / (max_pages - 1)
+        return [pages[round(index * step)] for index in range(max_pages)]
+
+    def sample_rows(self, max_pages: int) -> Iterator[Row]:
+        """产出最多 `max_pages` 个**均匀间隔**活动数据页上的行（采样；只读）。
+
+        采样是**有界近似**（D37/D41/D48）：只读这些页，不写盘、不遍历全表。
+        """
+        for page_no in self.sample_page_numbers(self.data_pages(), max_pages):
             page = read_page(self._pool, self._path, page_no)
             for record_offset, record_length, is_overflow in _page_slot_entries(
                 page

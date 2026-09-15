@@ -1,4 +1,4 @@
-"""契约 V3.0：Storage 共享数据形状与公开接口协议。
+"""契约 V3.1：Storage 共享数据形状与公开接口协议。
 
 BaseDatabaseServer 和 BaseStorage 只约定 B 向 C 暴露的方法；具体实现、
 文件格式与内部状态均由 storage/ 维护。
@@ -70,8 +70,14 @@ class IndexInfo:
 class ColumnStats:
     """列级统计：供 C 估算选择性与代价。
 
-    空表（或该列尚无数据）时 distinct_count 为 0、min_value / max_value
-    为 None；取值是否精确由 B 的采集策略决定，C 不得假设其精确。
+    字段精度不同，契约 3.1（D47）起明确区分：
+
+    - ``min_value`` / ``max_value`` 是**精确边界**：分别等于表中该列的最小值
+      与最大值；空表（或该列尚无数据）时为 None。C 可以依赖它做"键越界即
+      0 行"的推论，B 必须保证它不窄于真实范围。
+    - ``distinct_count`` 是**近似值**：由 B 的采集策略（有界采样）决定，
+      可能低于真实基数；C 不得假设其精确，只能当作估算输入。
+    - 空表时 ``distinct_count`` 为 0、``min_value`` / ``max_value`` 为 None。
     """
 
     name: str

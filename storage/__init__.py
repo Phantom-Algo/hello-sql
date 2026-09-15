@@ -504,7 +504,7 @@ class Storage:
             self._index_tree(info, column).insert(normalized[position], row_id)
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
         self._flush_indexes(name)
-        self._invalidate_stats(name)
+        self._note_stats_insert(name, normalized)
         return row_id
 
     def scan(self, name: str) -> Iterator[Row]:
@@ -529,7 +529,7 @@ class Storage:
                 tree.insert(normalized[position], row_id)
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
         self._flush_indexes(name)
-        self._invalidate_stats(name)
+        self._note_stats_update(name, old_values, normalized)
 
     def delete_row(self, name: str, row_id: RowId) -> None:
         """删除一行：engine 定位 → 移除槽 → 页内紧凑（D15）。"""
@@ -542,7 +542,7 @@ class Storage:
         engine.delete(row_id)
         self._pool.flush(self._table_file_path(name))  # 方法末 flush（D11）
         self._flush_indexes(name)
-        self._invalidate_stats(name)
+        self._note_stats_delete(name, old_values)
 
     # ---- 索引（V3 M3/D27–D46） ----
 
@@ -716,14 +716,42 @@ class Storage:
             self._server._stats[key] = provider
         return provider
 
-    def _invalidate_stats(self, table: str) -> None:
-        """写入后让列级统计失效（行数/页数由 engine 增量维护，无需重算）。"""
+    def _note_stats_insert(self, table: str, values: Sequence[Value]) -> None:
+        """写入后通知统计提供者：极值只拓宽、基数失效（D47）。
+
+        提供者尚未建立（本进程还没调用过 statistics）时直接跳过；首次快照
+        会自己建立精确基线，因此这里不需要为了统计而提前建任何状态。
+        """
+
         provider = self._server._stats.get((self._db_path, table))
         if provider is not None:
-            provider.invalidate()
+            provider.note_insert(values)
+
+    def _note_stats_update(
+        self,
+        table: str,
+        old_values: Sequence[Value],
+        new_values: Sequence[Value],
+    ) -> None:
+        """写入后通知统计提供者：旧值若正好是极值则转不确定，下次精确重算。"""
+
+        provider = self._server._stats.get((self._db_path, table))
+        if provider is not None:
+            provider.note_update(old_values, new_values)
+
+    def _note_stats_delete(self, table: str, old_values: Sequence[Value]) -> None:
+        """写入后通知统计提供者：删掉极值所在行时才需要重算。"""
+
+        provider = self._server._stats.get((self._db_path, table))
+        if provider is not None:
+            provider.note_delete(old_values)
 
     def statistics(self, table: str) -> TableStats:
-        """返回表的行数、数据页数与列级统计（规划期只读，D38）。"""
+        """返回表的行数、数据页数与列级统计（规划期只读，D38/D47）。
+
+        `min_value` / `max_value` 精确；`distinct_count` 近似。极值不确定时
+        本方法内部做一趟只读全扫建立基线（进程内一次性，缓存后 O(1)）。
+        """
         _validate_table_name(table)
         self._live_catalog().get(table)  # 表不存在 → E_TABLE_NOT_FOUND
         return self._stats_provider(table).snapshot()

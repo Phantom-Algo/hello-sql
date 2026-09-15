@@ -1,4 +1,4 @@
-"""V3 公共契约的形状测试（contracts 3.0）。
+"""V3 公共契约的形状测试（contracts 3.1）。
 
 本文件锁定 V3 新增的公共契约面：索引 DDL 的 AST 节点、索引与统计的
 共享数据类、BaseStorage 协议新增的五个方法，以及新增错误码。
@@ -38,9 +38,13 @@ from contracts.storage import (
 # ---------- 版本与语句联合 ----------
 
 
-def test_contract_version_is_3_0() -> None:
-    """契约版本号是三方的兼容性开关，必须随 V3 一起升级。"""
-    assert contracts.__version__ == "3.0"
+def test_contract_version_is_3_1() -> None:
+    """契约版本号是三方的兼容性开关，必须随语义变化一起升级。
+
+    3.1（DV3-12）：ColumnStats 的 min/max 收紧为精确边界、distinct 保持近似。
+    """
+
+    assert contracts.__version__ == "3.1"
 
 
 def test_statement_union_includes_index_ddl() -> None:

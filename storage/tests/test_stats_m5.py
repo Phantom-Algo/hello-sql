@@ -127,7 +127,11 @@ def test_statistics_counters_are_rebuilt_after_restart(tmp_path) -> None:
 
 
 def test_statistics_does_not_rescan_all_pages(storage, monkeypatch) -> None:
-    """统计必须 O(1) 可读：基线之后不得再触发全表页遍历。"""
+    """统计必须 O(1) 可读：基线之后不得再触发全表页遍历（D47）。
+
+    首次 statistics() 会建立精确极值基线（一趟只读全扫），之后无写入
+    或写入未破坏极值时都必须走缓存。
+    """
     _fill(storage, [(index, "x", 1.0, True) for index in range(5)])
     storage.statistics("t")  # 建立基线
 
@@ -316,10 +320,10 @@ def test_statistics_samples_at_most_configured_pages(storage, monkeypatch) -> No
 
 
 def test_statistics_min_max_come_from_real_rows(storage) -> None:
+    """契约 3.1（D47）：极值是真实极值，不是采样窗口里的极值。"""
+
     _fill(storage, [(value, "x", 1.0, True) for value in (4, 8, 15)])
 
     column = storage.statistics("t").columns[0]
 
-    assert column.min_value in {4, 8, 15}
-    assert column.max_value in {4, 8, 15}
-    assert column.min_value <= column.max_value
+    assert (column.min_value, column.max_value) == (4, 15)
