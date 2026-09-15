@@ -124,13 +124,29 @@ def ensure_dataset(
     cache_root = Path(cache_root)
     data_dir = cache_root / f"ds-{spec.fingerprint}"
     if not rebuild and _is_reusable(data_dir, spec):
+        _prepare_indexes(data_dir, spec)
         return Dataset(spec=spec, data_dir=data_dir, created=False)
     if data_dir.exists():
         # 只清理本基准自己的缓存子目录（按指纹派生，不含用户数据）。
         shutil.rmtree(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     _build(data_dir, spec)
+    _prepare_indexes(data_dir, spec)
     return Dataset(spec=spec, data_dir=data_dir, created=True)
+
+
+def _prepare_indexes(data_dir: Path, spec: DatasetSpec) -> None:
+    """让全部索引在**测量之前**完成打开/迁移，避免污染采样窗口。
+
+    B 的 D49a 起索引文件有版本概念（v1 无行页号、v2 有）。旧缓存目录第一次
+    被访问时会在打开索引的那一刻做一次 O(n log n) 重建——如果这件事发生在
+    第一个采样里，那一格的数据就既包含重建又包含查询，三模式也就不可比。
+    这里用公开接口把每个索引"碰"一次：只需要打开树，不必取回任何行。
+    """
+
+    handle = DatabaseServer(str(data_dir)).connect(spec.database)
+    for _name, column in spec.indexes:
+        handle.index_range(spec.table, column, None, None)
 
 
 def _is_reusable(data_dir: Path, spec: DatasetSpec) -> bool:

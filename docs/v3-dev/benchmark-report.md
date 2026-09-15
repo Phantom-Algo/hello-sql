@@ -1,6 +1,6 @@
 # V3 基准报告（索引 · 代价选路 · 优化器）
 
-> 生成时间（UTC）：2026-09-15T03:05:49+00:00　|　Python 3.11.15　|　Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+> 生成时间（UTC）：2026-09-15T04:21:27+00:00　|　Python 3.11.15　|　Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
 > 数据集：`main.events`，4000 行，seed=1，索引 idx_events_id(id), idx_events_amount(amount)
 > 采样：每种模式冷 3 次 + 热 3 次；数据集指纹 `0f34160918fc2da9`（复用缓存）
 > 复现：`python -m bench run --rows 4000 --seed 1 --repeat 3`
@@ -21,71 +21,71 @@
 
 | 场景 | 模式 | 层次 | 返回行 | 用户表页读 | 索引页读 | 系统目录页读 | 逻辑页读合计 | 物理读盘 | 耗时中位数(ms) | 页读加速比 | 选路 reason |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `point_hit` | `sql-auto` | A+B+C | 1 | 13 | 6 | 0 | 19 | 3 | 3.31 | 3.11× | INDEX_EQUALITY |
-| `point_hit` | `sql-seq` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 35.32 | 1.00× | FORCED_SEQ |
-| `point_hit` | `sql-index` | A+B+C | 1 | 13 | 6 | 0 | 19 | 3 | 3.26 | 3.11× | FORCED_INDEX |
-| `point_hit` | `api-seq` | B | 1 | 166 | 0 | 0 | 166 | 54 | 21.83 | 1.00× | — |
-| `point_hit` | `api-index` | B | 1 | 143 | 6 | 0 | 149 | 57 | 11.38 | 1.11× | — |
-| `point_miss` | `sql-auto` | A+B+C | 0 | 12 | 6 | 0 | 18 | 3 | 2.96 | 3.28× | INDEX_EQUALITY |
-| `point_miss` | `sql-seq` | A+B+C | 0 | 59 | 0 | 0 | 59 | 0 | 36.38 | 1.00× | FORCED_SEQ |
-| `point_miss` | `sql-index` | A+B+C | 0 | 12 | 6 | 0 | 18 | 3 | 2.96 | 3.28× | FORCED_INDEX |
-| `point_miss` | `api-seq` | B | 0 | 166 | 0 | 0 | 166 | 54 | 24.78 | 1.00× | — |
-| `point_miss` | `api-index` | B | 0 | 24 | 6 | 0 | 30 | 9 | 1.98 | 5.53× | — |
-| `range_selective` | `sql-auto` | A+B+C | 99 | 59 | 0 | 0 | 59 | 0 | 42.43 | 1.00× | SEQ_CHEAPER |
-| `range_selective` | `sql-seq` | A+B+C | 99 | 59 | 0 | 0 | 59 | 0 | 42.09 | 1.00× | FORCED_SEQ |
-| `range_selective` | `sql-index` | A+B+C | 99 | 111 | 7 | 0 | 118 | 4 | 17.10 | 0.50× | FORCED_INDEX |
-| `range_selective` | `api-seq` | B | 99 | 166 | 0 | 0 | 166 | 54 | 24.68 | 1.00× | — |
-| `range_selective` | `api-index` | B | 99 | 4717 | 7 | 0 | 4724 | 58 | 461.90 | 0.04× | — |
-| `range_wide` | `sql-auto` | A+B+C | 2999 | 59 | 0 | 0 | 59 | 0 | 46.20 | 1.00× | SEQ_CHEAPER |
-| `range_wide` | `sql-seq` | A+B+C | 2999 | 59 | 0 | 0 | 59 | 0 | 45.61 | 1.00× | FORCED_SEQ |
-| `range_wide` | `sql-index` | A+B+C | 2999 | 3011 | 41 | 0 | 3052 | 70 | 516.59 | 0.02× | FORCED_INDEX |
-| `range_wide` | `api-seq` | B | 2999 | 166 | 0 | 0 | 166 | 54 | 27.70 | 1.00× | — |
-| `range_wide` | `api-index` | B | 2999 | 88817 | 41 | 0 | 88858 | 92 | 8929.00 | 0.00× | — |
-| `dup_lookup` | `sql-auto` | A+B+C | 43 | 55 | 6 | 0 | 61 | 3 | 9.11 | 0.97× | INDEX_EQUALITY |
-| `dup_lookup` | `sql-seq` | A+B+C | 43 | 59 | 0 | 0 | 59 | 0 | 33.65 | 1.00× | FORCED_SEQ |
-| `dup_lookup` | `sql-index` | A+B+C | 43 | 55 | 6 | 0 | 61 | 3 | 8.96 | 0.97× | FORCED_INDEX |
-| `dup_lookup` | `api-seq` | B | 43 | 166 | 0 | 0 | 166 | 54 | 22.52 | 1.00× | — |
-| `dup_lookup` | `api-index` | B | 43 | 1245 | 6 | 0 | 1251 | 57 | 120.53 | 0.13× | — |
-| `no_index_column` | `sql-auto` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 36.80 | 1.00× | NO_MATCHING_INDEX |
-| `no_index_column` | `sql-seq` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 38.60 | 1.00× | FORCED_SEQ |
-| `no_index_column` | `sql-index` | A+B+C | 0 | 12 | 0 | 0 | 12 | 0 | 2.19 | 4.92× | 错误 |
-| `no_index_column` | `api-seq` | B | 1 | 166 | 0 | 0 | 166 | 54 | 22.35 | 1.00× | — |
-| `no_index_column` | `api-index` | B | 0 | 24 | 0 | 0 | 24 | 6 | 1.08 | 6.92× | 错误 |
+| `point_hit` | `sql-auto` | A+B+C | 1 | 13 | 6 | 0 | 19 | 3 | 3.83 | 3.11× | INDEX_EQUALITY |
+| `point_hit` | `sql-seq` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 34.25 | 1.00× | FORCED_SEQ |
+| `point_hit` | `sql-index` | A+B+C | 1 | 13 | 6 | 0 | 19 | 3 | 3.36 | 3.11× | FORCED_INDEX |
+| `point_hit` | `api-seq` | B | 1 | 166 | 0 | 0 | 166 | 54 | 25.20 | 1.00× | — |
+| `point_hit` | `api-index` | B | 1 | 25 | 6 | 0 | 31 | 10 | 1.93 | 5.35× | — |
+| `point_miss` | `sql-auto` | A+B+C | 0 | 12 | 6 | 0 | 18 | 3 | 3.89 | 3.28× | INDEX_EQUALITY |
+| `point_miss` | `sql-seq` | A+B+C | 0 | 59 | 0 | 0 | 59 | 0 | 37.37 | 1.00× | FORCED_SEQ |
+| `point_miss` | `sql-index` | A+B+C | 0 | 12 | 6 | 0 | 18 | 3 | 4.31 | 3.28× | FORCED_INDEX |
+| `point_miss` | `api-seq` | B | 0 | 166 | 0 | 0 | 166 | 54 | 22.03 | 1.00× | — |
+| `point_miss` | `api-index` | B | 0 | 24 | 6 | 0 | 30 | 9 | 1.82 | 5.53× | — |
+| `range_selective` | `sql-auto` | A+B+C | 99 | 59 | 0 | 0 | 59 | 0 | 38.42 | 1.00× | SEQ_CHEAPER |
+| `range_selective` | `sql-seq` | A+B+C | 99 | 59 | 0 | 0 | 59 | 0 | 42.27 | 1.00× | FORCED_SEQ |
+| `range_selective` | `sql-index` | A+B+C | 99 | 111 | 6 | 0 | 117 | 3 | 19.73 | 0.50× | FORCED_INDEX |
+| `range_selective` | `api-seq` | B | 99 | 166 | 0 | 0 | 166 | 54 | 24.23 | 1.00× | — |
+| `range_selective` | `api-index` | B | 99 | 123 | 6 | 0 | 129 | 11 | 14.02 | 1.29× | — |
+| `range_wide` | `sql-auto` | A+B+C | 2999 | 59 | 0 | 0 | 59 | 0 | 46.06 | 1.00× | SEQ_CHEAPER |
+| `range_wide` | `sql-seq` | A+B+C | 2999 | 59 | 0 | 0 | 59 | 0 | 47.16 | 1.00× | FORCED_SEQ |
+| `range_wide` | `sql-index` | A+B+C | 2999 | 3011 | 46 | 0 | 3057 | 77 | 542.58 | 0.02× | FORCED_INDEX |
+| `range_wide` | `api-seq` | B | 2999 | 166 | 0 | 0 | 166 | 54 | 25.65 | 1.00× | — |
+| `range_wide` | `api-index` | B | 2999 | 3023 | 46 | 0 | 3069 | 85 | 458.64 | 0.05× | — |
+| `dup_lookup` | `sql-auto` | A+B+C | 43 | 55 | 6 | 0 | 61 | 3 | 9.59 | 0.97× | INDEX_EQUALITY |
+| `dup_lookup` | `sql-seq` | A+B+C | 43 | 59 | 0 | 0 | 59 | 0 | 35.11 | 1.00× | FORCED_SEQ |
+| `dup_lookup` | `sql-index` | A+B+C | 43 | 55 | 6 | 0 | 61 | 3 | 11.77 | 0.97× | FORCED_INDEX |
+| `dup_lookup` | `api-seq` | B | 43 | 166 | 0 | 0 | 166 | 54 | 25.58 | 1.00× | — |
+| `dup_lookup` | `api-index` | B | 43 | 67 | 6 | 0 | 73 | 35 | 10.59 | 2.27× | — |
+| `no_index_column` | `sql-auto` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 41.14 | 1.00× | NO_MATCHING_INDEX |
+| `no_index_column` | `sql-seq` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 39.93 | 1.00× | FORCED_SEQ |
+| `no_index_column` | `sql-index` | A+B+C | 0 | 12 | 0 | 0 | 12 | 0 | 2.42 | 4.92× | 错误 |
+| `no_index_column` | `api-seq` | B | 1 | 166 | 0 | 0 | 166 | 54 | 31.51 | 1.00× | — |
+| `no_index_column` | `api-index` | B | 0 | 24 | 0 | 0 | 24 | 6 | 1.39 | 6.92× | 错误 |
 
 ## 主表（同进程热）
 
 | 场景 | 模式 | 层次 | 返回行 | 用户表页读 | 索引页读 | 系统目录页读 | 逻辑页读合计 | 物理读盘 | 耗时中位数(ms) | 页读加速比 | 选路 reason |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `point_hit` | `sql-auto` | A+B+C | 1 | 13 | 4 | 0 | 17 | 0 | 2.74 | 3.47× | INDEX_EQUALITY |
-| `point_hit` | `sql-seq` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 39.90 | 1.00× | FORCED_SEQ |
-| `point_hit` | `sql-index` | A+B+C | 1 | 13 | 4 | 0 | 17 | 0 | 2.58 | 3.47× | FORCED_INDEX |
-| `point_hit` | `api-seq` | B | 1 | 59 | 0 | 0 | 59 | 0 | 16.70 | 1.00× | — |
-| `point_hit` | `api-index` | B | 1 | 13 | 4 | 0 | 17 | 0 | 2.22 | 3.47× | — |
-| `point_miss` | `sql-auto` | A+B+C | 0 | 12 | 4 | 0 | 16 | 0 | 2.97 | 3.69× | INDEX_EQUALITY |
-| `point_miss` | `sql-seq` | A+B+C | 0 | 59 | 0 | 0 | 59 | 0 | 40.32 | 1.00× | FORCED_SEQ |
-| `point_miss` | `sql-index` | A+B+C | 0 | 12 | 4 | 0 | 16 | 0 | 2.09 | 3.69× | FORCED_INDEX |
-| `point_miss` | `api-seq` | B | 0 | 59 | 0 | 0 | 59 | 0 | 18.07 | 1.00× | — |
-| `point_miss` | `api-index` | B | 0 | 12 | 4 | 0 | 16 | 0 | 2.30 | 3.69× | — |
-| `range_selective` | `sql-auto` | A+B+C | 99 | 59 | 0 | 0 | 59 | 0 | 37.59 | 1.00× | SEQ_CHEAPER |
-| `range_selective` | `sql-seq` | A+B+C | 99 | 59 | 0 | 0 | 59 | 0 | 38.46 | 1.00× | FORCED_SEQ |
-| `range_selective` | `sql-index` | A+B+C | 99 | 111 | 5 | 0 | 116 | 0 | 16.87 | 0.51× | FORCED_INDEX |
-| `range_selective` | `api-seq` | B | 99 | 59 | 0 | 0 | 59 | 0 | 18.02 | 1.00× | — |
-| `range_selective` | `api-index` | B | 99 | 111 | 5 | 0 | 116 | 0 | 14.81 | 0.51× | — |
-| `range_wide` | `sql-auto` | A+B+C | 2999 | 59 | 0 | 0 | 59 | 0 | 45.02 | 1.00× | SEQ_CHEAPER |
-| `range_wide` | `sql-seq` | A+B+C | 2999 | 59 | 0 | 0 | 59 | 0 | 44.10 | 1.00× | FORCED_SEQ |
-| `range_wide` | `sql-index` | A+B+C | 2999 | 3011 | 39 | 0 | 3050 | 80 | 504.74 | 0.02× | FORCED_INDEX |
-| `range_wide` | `api-seq` | B | 2999 | 59 | 0 | 0 | 59 | 0 | 20.26 | 1.00× | — |
-| `range_wide` | `api-index` | B | 2999 | 3011 | 39 | 0 | 3050 | 80 | 472.82 | 0.02× | — |
-| `dup_lookup` | `sql-auto` | A+B+C | 43 | 55 | 4 | 0 | 59 | 0 | 8.74 | 1.00× | INDEX_EQUALITY |
-| `dup_lookup` | `sql-seq` | A+B+C | 43 | 59 | 0 | 0 | 59 | 0 | 36.47 | 1.00× | FORCED_SEQ |
-| `dup_lookup` | `sql-index` | A+B+C | 43 | 55 | 4 | 0 | 59 | 0 | 8.23 | 1.00× | FORCED_INDEX |
-| `dup_lookup` | `api-seq` | B | 43 | 59 | 0 | 0 | 59 | 0 | 16.62 | 1.00× | — |
-| `dup_lookup` | `api-index` | B | 43 | 55 | 4 | 0 | 59 | 0 | 8.12 | 1.00× | — |
-| `no_index_column` | `sql-auto` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 37.66 | 1.00× | NO_MATCHING_INDEX |
-| `no_index_column` | `sql-seq` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 35.80 | 1.00× | FORCED_SEQ |
-| `no_index_column` | `sql-index` | A+B+C | 0 | 12 | 0 | 0 | 12 | 0 | 1.56 | 4.92× | 错误 |
-| `no_index_column` | `api-seq` | B | 1 | 59 | 0 | 0 | 59 | 0 | 16.34 | 1.00× | — |
-| `no_index_column` | `api-index` | B | 0 | 12 | 0 | 0 | 12 | 0 | 1.35 | 4.92× | 错误 |
+| `point_hit` | `sql-auto` | A+B+C | 1 | 13 | 4 | 0 | 17 | 0 | 3.02 | 3.47× | INDEX_EQUALITY |
+| `point_hit` | `sql-seq` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 35.41 | 1.00× | FORCED_SEQ |
+| `point_hit` | `sql-index` | A+B+C | 1 | 13 | 4 | 0 | 17 | 0 | 3.34 | 3.47× | FORCED_INDEX |
+| `point_hit` | `api-seq` | B | 1 | 59 | 0 | 0 | 59 | 0 | 15.84 | 1.00× | — |
+| `point_hit` | `api-index` | B | 1 | 13 | 4 | 0 | 17 | 0 | 1.62 | 3.47× | — |
+| `point_miss` | `sql-auto` | A+B+C | 0 | 12 | 4 | 0 | 16 | 0 | 2.07 | 3.69× | INDEX_EQUALITY |
+| `point_miss` | `sql-seq` | A+B+C | 0 | 59 | 0 | 0 | 59 | 0 | 36.71 | 1.00× | FORCED_SEQ |
+| `point_miss` | `sql-index` | A+B+C | 0 | 12 | 4 | 0 | 16 | 0 | 2.22 | 3.69× | FORCED_INDEX |
+| `point_miss` | `api-seq` | B | 0 | 59 | 0 | 0 | 59 | 0 | 15.38 | 1.00× | — |
+| `point_miss` | `api-index` | B | 0 | 12 | 4 | 0 | 16 | 0 | 1.99 | 3.69× | — |
+| `range_selective` | `sql-auto` | A+B+C | 99 | 59 | 0 | 0 | 59 | 0 | 40.41 | 1.00× | SEQ_CHEAPER |
+| `range_selective` | `sql-seq` | A+B+C | 99 | 59 | 0 | 0 | 59 | 0 | 43.69 | 1.00× | FORCED_SEQ |
+| `range_selective` | `sql-index` | A+B+C | 99 | 111 | 4 | 0 | 115 | 0 | 17.23 | 0.51× | FORCED_INDEX |
+| `range_selective` | `api-seq` | B | 99 | 59 | 0 | 0 | 59 | 0 | 17.81 | 1.00× | — |
+| `range_selective` | `api-index` | B | 99 | 111 | 4 | 0 | 115 | 0 | 14.09 | 0.51× | — |
+| `range_wide` | `sql-auto` | A+B+C | 2999 | 59 | 0 | 0 | 59 | 0 | 50.18 | 1.00× | SEQ_CHEAPER |
+| `range_wide` | `sql-seq` | A+B+C | 2999 | 59 | 0 | 0 | 59 | 0 | 54.21 | 1.00× | FORCED_SEQ |
+| `range_wide` | `sql-index` | A+B+C | 2999 | 3011 | 44 | 0 | 3055 | 85 | 523.36 | 0.02× | FORCED_INDEX |
+| `range_wide` | `api-seq` | B | 2999 | 59 | 0 | 0 | 59 | 0 | 20.27 | 1.00× | — |
+| `range_wide` | `api-index` | B | 2999 | 3011 | 44 | 0 | 3055 | 85 | 470.61 | 0.02× | — |
+| `dup_lookup` | `sql-auto` | A+B+C | 43 | 55 | 4 | 0 | 59 | 0 | 9.26 | 1.00× | INDEX_EQUALITY |
+| `dup_lookup` | `sql-seq` | A+B+C | 43 | 59 | 0 | 0 | 59 | 0 | 37.20 | 1.00× | FORCED_SEQ |
+| `dup_lookup` | `sql-index` | A+B+C | 43 | 55 | 4 | 0 | 59 | 0 | 10.42 | 1.00× | FORCED_INDEX |
+| `dup_lookup` | `api-seq` | B | 43 | 59 | 0 | 0 | 59 | 0 | 18.29 | 1.00× | — |
+| `dup_lookup` | `api-index` | B | 43 | 55 | 4 | 0 | 59 | 0 | 8.88 | 1.00× | — |
+| `no_index_column` | `sql-auto` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 40.44 | 1.00× | NO_MATCHING_INDEX |
+| `no_index_column` | `sql-seq` | A+B+C | 1 | 59 | 0 | 0 | 59 | 0 | 42.03 | 1.00× | FORCED_SEQ |
+| `no_index_column` | `sql-index` | A+B+C | 0 | 12 | 0 | 0 | 12 | 0 | 2.13 | 4.92× | 错误 |
+| `no_index_column` | `api-seq` | B | 1 | 59 | 0 | 0 | 59 | 0 | 19.36 | 1.00× | — |
+| `no_index_column` | `api-index` | B | 0 | 12 | 0 | 0 | 12 | 0 | 2.11 | 4.92× | 错误 |
 
 ## 选路决策（sql-auto，冷启动）
 
@@ -120,21 +120,23 @@
 - SQL 层（含 C 的选路，冷启动、已统一预热）：
   - `point_hit`：seq 59 → index 19 逻辑页读（3.11×）；`auto` 选 `INDEX_EQUALITY`，实际 19 页
   - `point_miss`：seq 59 → index 18 逻辑页读（3.28×）；`auto` 选 `INDEX_EQUALITY`，实际 18 页
-  - `range_selective`：seq 59 → index 118 逻辑页读（0.50×）；`auto` 选 `SEQ_CHEAPER`，实际 59 页
-  - `range_wide`：seq 59 → index 3052 逻辑页读（0.02×）；`auto` 选 `SEQ_CHEAPER`，实际 59 页
+  - `range_selective`：seq 59 → index 117 逻辑页读（0.50×）；`auto` 选 `SEQ_CHEAPER`，实际 59 页
+  - `range_wide`：seq 59 → index 3057 逻辑页读（0.02×）；`auto` 选 `SEQ_CHEAPER`，实际 59 页
   - `dup_lookup`：seq 59 → index 61 逻辑页读（0.97×）；`auto` 选 `INDEX_EQUALITY`，实际 61 页
 - 存储层（纯 B，不经规划器）：冷启动下索引被回表定位拖累（D49），热态才体现索引收益：
-  - `point_hit`：冷 seq 166 / index 149；热 seq 59 / index 17
+  - `point_hit`：冷 seq 166 / index 31；热 seq 59 / index 17
   - `point_miss`：冷 seq 166 / index 30；热 seq 59 / index 16
-  - `range_selective`：冷 seq 166 / index 4724；热 seq 59 / index 116
-  - `range_wide`：冷 seq 166 / index 88858；热 seq 59 / index 3050
-  - `dup_lookup`：冷 seq 166 / index 1251；热 seq 59 / index 59
+  - `range_selective`：冷 seq 166 / index 129；热 seq 59 / index 115
+  - `range_wide`：冷 seq 166 / index 3069；热 seq 59 / index 3055
+  - `dup_lookup`：冷 seq 166 / index 73；热 seq 59 / index 59
   - `no_index_column`：冷 seq 166 / index 24；热 seq 59 / index 12
 
 ## 已知限制
 
-- **冷启动回表**：B 在 rid→页 映射未建立时逐页探测（`engine._locate` 的退化分支），所以冷进程里索引点查/区间扫描的成本被放大；同进程第二次起才 O(1)。B 侧登记为 D49（回表 O(1)）待排期。
+- **冷启动回表**：D49a 起索引叶条目自带行页号，冷进程回表也是每行一页；页号只是提示，读侧校验不符会退回全表定位，因此正确性不依赖它。
+- **布局基线**：冷进程的第一次访问仍要付一次 D37 惰性布局基线（建立行数与活动数据页集合），此后扫描只按数据页读一遍（D49b）。
 - **统计基线**：极值精确化后，`statistics()` 的首次调用会读满数据页（进程内一次性）；这也会顺带预热 rid 映射，使 `auto` 与强制 `index` 在同一进程里的成本不对称——这正是 `api-*` 两列存在的原因。
+- **索引文件版本**：D49a 起为 2；旧目录（v1）里的索引在**首次被访问**时自动重建一次（O(n log n)），bench 已在数据集准备阶段完成这件事。
 - **基数近似**：`distinct_count` 仍是有界采样（最多 16 页），大表会偏低；`min/max` 已精确。
 - C 的优化器与选路只覆盖单表谓词下推；JOIN 重排不在本版范围。
 
